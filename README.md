@@ -183,7 +183,8 @@ CRDT 只解决“最终内容一致”，不解决“服务端到底存下来了
 
 | 场景 | 用例位置 |
 | --- | --- |
-| 同段并发插入、增删交叉后各端一致 | `frontend/e2e/editor.spec.ts`、`frontend/tests/interop.test.ts` |
+| 同段并发插入、增删交叉后各端一致 | `frontend/e2e/editor.spec.ts`、`frontend/e2e/recovery.spec.ts`、`frontend/tests/interop.test.ts` |
+| 远端更新期间本端焦点与选区不被重置 | `frontend/e2e/editor.spec.ts` |
 | 服务端提交成功但 ACK 丢失，重发后不重复插字、不重复建记录 | `frontend/e2e/recovery.spec.ts` |
 | 提交后、广播前进程被杀，重启后新客户端仍能读到 | `frontend/e2e/recovery.spec.ts` |
 | 握手期间另一端持续提交，无订阅空档 | `frontend/e2e/recovery.spec.ts`、`backend/tests/test_websocket.py` |

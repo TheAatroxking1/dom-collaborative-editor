@@ -180,6 +180,35 @@ test.describe('双端协作', () => {
     await expect.poll(() => textOf(second)).toBe('第一段\n第二段')
   })
 
+  test('远端更新期间本端焦点与选区不被重置', async ({ first, second, openDocument }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('一二三四五')
+    await expect.poll(() => textOf(first)).toBe('一二三四五')
+
+    await second.goto(`/#/documents/${documentId}`)
+    await expect(second.getByRole('textbox', { name: '文档正文' })).toBeVisible()
+    await expect.poll(() => textOf(second)).toBe('一二三四五')
+
+    // 在第二端选中段首两个字，然后让第一端在段尾插入。
+    await selectLeadingCharacters(second, 2)
+    await expect
+      .poll(() => second.evaluate(() => String(window.getSelection()?.toString())))
+      .toBe('一二')
+
+    await focusEditor(first)
+    await first.keyboard.press('End')
+    await settleSelection(first)
+    await first.keyboard.insertText('末尾')
+    await expect.poll(() => textOf(second)).toBe('一二三四五末尾')
+
+    // 远端更新不能把本端选区整段重置，更不能把光标焦点赶走。
+    expect(await second.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe(
+      '文档正文',
+    )
+    expect(await second.evaluate(() => String(window.getSelection()?.toString()))).toBe('一二')
+  })
+
   test('本地撤销不会把远端内容一起撤掉', async ({ first, second, openDocument }) => {
     const documentId = await openDocument(first)
     await second.goto(`/#/documents/${documentId}`)

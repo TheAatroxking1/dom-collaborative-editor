@@ -305,6 +305,52 @@ test.describe('并发与隔离', () => {
     expect(merged).toContain('B')
   })
 
+  test('一端插入与另一端删除交叉时双方收敛，互不覆盖', async ({
+    backend,
+    first,
+    second,
+    openDocument,
+  }) => {
+    const documentId = await openDocument(first)
+    await typeText(first, 'abcdefgh')
+    await waitForServerSaved(first)
+
+    await openDocumentAt(second, documentId)
+    await expect.poll(() => textOf(second)).toBe('abcdefgh')
+
+    const firstGate = await backend.gates.arm('before_ack_send', { documentId })
+    const secondGate = await backend.gates.arm('before_ack_send', { documentId })
+
+    // 两个页面并发操作：一端在末尾插入，另一端删除开头两个字符。
+    await Promise.all([
+      (async () => {
+        await focusEditor(first)
+        await first.keyboard.press('End')
+        await settleSelection(first)
+        await first.keyboard.insertText('X')
+      })(),
+      (async () => {
+        await selectLeadingCharacters(second, 2)
+        await second.keyboard.press('Delete')
+      })(),
+    ])
+
+    await backend.gates.wait(firstGate)
+    await backend.gates.wait(secondGate)
+    await backend.gates.releaseAll()
+
+    await waitForServerSaved(first, 40_000)
+    await waitForServerSaved(second, 40_000)
+
+    await expect.poll(async () => (await textOf(first)) === (await textOf(second))).toBe(true)
+    const merged = await textOf(first)
+    // 删除掉的字符不能回来，插入的字符也不能丢——不存在整段旧内容覆盖新内容。
+    expect(merged).not.toContain('a')
+    expect(merged).not.toContain('b')
+    expect(merged).toContain('X')
+    expect(merged).toContain('cdefgh')
+  })
+
   test('同源两个标签页各自编辑，不产生重复正文', async ({
     first,
     siblingTab,
