@@ -31,7 +31,17 @@ export type Clock = {
   random(): number
 }
 
-export type ProviderState = SaveInputs & { message: string | null }
+export type ProviderState = SaveInputs & {
+  message: string | null
+  /** 服务端报告的固定错误码，供界面区分「文档不存在」这类情况。 */
+  errorCode: string | null
+}
+
+/** 供折叠调试面板展示的技术事件，不参与任何状态判断。 */
+export type ProviderEvent = {
+  kind: 'connect' | 'open' | 'sync' | 'send' | 'ack' | 'broadcast' | 'close' | 'error'
+  detail: string
+}
 
 export type ProviderOptions = {
   documentId: string
@@ -41,6 +51,7 @@ export type ProviderOptions = {
   onState: (state: ProviderState) => void
   socketFactory?: (url: string) => SocketLike
   clock?: Clock
+  onEvent?: (event: ProviderEvent) => void
 }
 
 export interface CollabProvider {
@@ -69,6 +80,7 @@ export class CollabProviderClient implements CollabProvider {
   private readonly onState: (state: ProviderState) => void
   private readonly socketFactory: (url: string) => SocketLike
   private readonly clock: Clock
+  private readonly onEvent: ((event: ProviderEvent) => void) | null
 
   private socket: SocketLike | null = null
   private syncId: string | null = null
@@ -86,6 +98,7 @@ export class CollabProviderClient implements CollabProvider {
   private remoteError = false
   private permanent = false
   private message: string | null = null
+  private errorCode: string | null = null
 
   /** 已持久化但尚未发送的事务，按落盘顺序排列。 */
   private outbound: PendingTx[] = []
@@ -118,6 +131,7 @@ export class CollabProviderClient implements CollabProvider {
     this.onState = options.onState
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url) as SocketLike)
     this.clock = options.clock ?? realClock
+    this.onEvent = options.onEvent ?? null
   }
 
   /** 待发送更新累计字节数，供界面判断是否暂停新增编辑。 */
@@ -138,6 +152,7 @@ export class CollabProviderClient implements CollabProvider {
     this.remoteError = false
     this.permanent = false
     this.message = null
+    this.errorCode = null
     this.reconnectAttempt = 0
     this.publish()
     void this.flushRetryWrites()
@@ -250,6 +265,7 @@ export class CollabProviderClient implements CollabProvider {
     const generation = this.generation
     this.syncId = crypto.randomUUID()
     this.phase = 'connecting'
+    this.emit('connect', `连接 ${this.url}（syncId ${this.syncId.slice(0, 8)}）`)
     this.publish()
 
     let socket: SocketLike
@@ -271,6 +287,7 @@ export class CollabProviderClient implements CollabProvider {
       this.connected = true
       this.ready = false
       this.phase = 'syncing'
+      this.emit('open', '连接已建立，发送 hello')
       this.publish()
       this.send(
         encodeHello(this.documentId, this.syncId as string, Y.encodeStateVector(this.doc)),
@@ -320,6 +337,7 @@ export class CollabProviderClient implements CollabProvider {
     const socket = this.socket
     this.socket = null
     if (socket !== null) {
+      this.emit('close', '连接已断开')
       socket.onopen = null
       socket.onmessage = null
       socket.onclose = null
@@ -371,12 +389,15 @@ export class CollabProviderClient implements CollabProvider {
   ): Promise<void> {
     switch (message.type) {
       case 'sync':
+        this.emit('sync', `收到同步差量 seq=${message.seq}`)
         await this.handleSync(message, generation)
         return
       case 'update':
+        this.emit('broadcast', `收到广播 seq=${message.seq}`)
         await this.persistRemote(message.update)
         return
       case 'ack':
+        this.emit('ack', `确认 txId ${message.txId.slice(0, 8)} seq=${message.seq}`)
         await this.handleAck(message.txId, generation)
         return
       case 'ready':
@@ -485,7 +506,9 @@ export class CollabProviderClient implements CollabProvider {
 
   private handleServerError(code: string, retryable: boolean, detail: string): void {
     this.remoteError = true
+    this.errorCode = code
     this.message = `${code}：${detail}`
+    this.emit('error', `${code}（${retryable ? '可重试' : '不可重试'}）：${detail}`)
     this.publish()
 
     if (retryable) {
@@ -505,6 +528,7 @@ export class CollabProviderClient implements CollabProvider {
     this.permanent = true
     this.remoteError = true
     this.message = `协议错误：${describe(error)}`
+    this.emit('error', this.message)
     this.clearReconnect()
     this.teardown()
     this.publish()
@@ -536,6 +560,7 @@ export class CollabProviderClient implements CollabProvider {
       return
     }
     this.inFlight = next
+    this.emit('send', `发送 ${next.kind} txId ${next.txId.slice(0, 8)}`)
     this.send(
       encodeTx(this.documentId, this.syncId as string, next.txId, next.kind, next.update),
     )
@@ -577,6 +602,10 @@ export class CollabProviderClient implements CollabProvider {
     socket.send(text)
   }
 
+  private emit(kind: ProviderEvent['kind'], detail: string): void {
+    this.onEvent?.({ kind, detail })
+  }
+
   // --- 状态 ---------------------------------------------------------------
 
   private trackPending(pending: PendingTx): void {
@@ -596,6 +625,7 @@ export class CollabProviderClient implements CollabProvider {
       localError: this.localError,
       remoteError: this.remoteError,
       message: this.message,
+      errorCode: this.errorCode,
     })
   }
 }
