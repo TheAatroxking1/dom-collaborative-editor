@@ -62,22 +62,34 @@ pwsh -File scripts/dev.ps1
 或者手动开两个终端：
 
 ```bash
-backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787
 ```
 
 ```bash
-npm --prefix frontend run dev -- --host 127.0.0.1
+npm --prefix frontend run dev
 ```
 
-打开 <http://127.0.0.1:5173>，点“新建文档”，把地址栏里的链接复制到另一个浏览器
+打开 <http://127.0.0.1:5273>，点“新建文档”，把地址栏里的链接复制到另一个浏览器
 （或另一个浏览器配置文件）打开，即可开始协作。
+
+默认端口是 8787（后端）与 5273（前端），刻意避开 5173 和 8000——这两个端口在开发机上
+经常被其他项目或 Docker 占用。需要换端口时三处要一致：
+
+```bash
+backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 9000
+```
+
+```bash
+COLLAB_BACKEND_URL=http://127.0.0.1:9000 COLLAB_DEV_PORT=5300 npm --prefix frontend run dev
+```
 
 运行时配置：
 
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |
 | `COLLAB_DB_PATH` | `backend/data/collab.db` | SQLite 数据库路径 |
-| `COLLAB_BACKEND_URL` | `http://127.0.0.1:8000` | Vite 开发代理指向的后端 |
+| `COLLAB_BACKEND_URL` | `http://127.0.0.1:8787` | Vite 开发代理指向的后端 |
+| `COLLAB_DEV_PORT` | `5273` | Vite 开发服务器端口 |
 
 ## 测试
 

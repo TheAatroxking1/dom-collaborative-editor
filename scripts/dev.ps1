@@ -7,6 +7,9 @@
     只启动本脚本自己创建的两个子进程，并在退出时按 PID 终止它们（含各自的
     子进程树）。不会按端口去结束未知进程——那些可能是其他项目正在使用的服务。
 
+    默认端口刻意避开 5173 与 8000：这两个端口在开发机上经常被其他项目或 Docker
+    占用。确实需要时用 -BackendPort / -FrontendPort 指定。
+
     缺少依赖时只打印精确的安装命令并退出，不擅自修改全局环境。
 
 .EXAMPLE
@@ -14,8 +17,8 @@
 #>
 [CmdletBinding()]
 param(
-    [int]$BackendPort = 8000,
-    [int]$FrontendPort = 5173
+    [int]$BackendPort = 8787,
+    [int]$FrontendPort = 5273
 )
 
 $ErrorActionPreference = 'Stop'
