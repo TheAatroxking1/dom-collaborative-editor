@@ -1,29 +1,17 @@
-import { expect, test } from './fixtures'
-
-/**
- * 读取编辑器正文的纯文本，按段落分行。
- *
- * 逐段取 innerText 而不是整体取：ProseMirror 会在每个块级节点末尾插入
- * 一个用于占位的 <br>，整体取会把每个段落都多算一个换行。
- */
-async function textOf(page: import('@playwright/test').Page): Promise<string> {
-  const paragraphs = page.getByRole('textbox', { name: '文档正文' }).locator('p')
-  const texts = await paragraphs.allInnerTexts()
-  return texts.map((text) => text.replace(/\n+$/, '')).join('\n')
-}
-
-async function countParagraphs(page: import('@playwright/test').Page): Promise<number> {
-  return page.getByRole('textbox', { name: '文档正文' }).locator('p').count()
-}
-
-async function focusEditor(page: import('@playwright/test').Page): Promise<void> {
-  await page.getByRole('textbox', { name: '文档正文' }).click()
-}
+import {
+  editorParagraphCount as countParagraphs,
+  editorText as textOf,
+  expect,
+  focusEditor,
+  test,
+} from './fixtures'
 
 test.describe('单人编辑', () => {
-  test('新建文档后地址栏带上文档标识，编辑器可输入', async ({ first, openDocument }) => {
-    const documentId = await openDocument(first)
-    expect(documentId).toMatch(/^[0-9a-f-]{36}$/)
+  test('新建文档后地址栏带上文档标识，编辑器可输入', async ({ first }) => {
+    await first.goto('/')
+    await first.getByRole('button', { name: '新建文档' }).click()
+    await expect(first).toHaveURL(/#\/documents\/[0-9a-f-]{36}$/)
+    await expect(first.getByRole('textbox', { name: '文档正文' })).toBeVisible()
 
     await focusEditor(first)
     await first.keyboard.type('中文English🙂')
@@ -77,8 +65,7 @@ test.describe('单人编辑', () => {
     await first.keyboard.press('Shift+Enter')
     await first.keyboard.type('仍在同一段')
 
-    const paragraphs = first.getByRole('textbox', { name: '文档正文' }).locator('p')
-    await expect(paragraphs).toHaveCount(1)
+    await expect.poll(() => countParagraphs(first)).toBe(1)
     await expect.poll(() => textOf(first)).toBe('第一行\n仍在同一段')
   })
 
@@ -88,11 +75,11 @@ test.describe('单人编辑', () => {
     await first.keyboard.type('第一段')
     await first.keyboard.press('Enter')
     await first.keyboard.type('第二段')
-    await expect(first.getByRole('textbox', { name: '文档正文' }).locator('p')).toHaveCount(2)
+    await expect.poll(() => countParagraphs(first)).toBe(2)
 
     await first.keyboard.press('Control+A')
     await first.keyboard.press('Delete')
-    await expect(first.getByRole('textbox', { name: '文档正文' }).locator('p')).toHaveCount(1)
+    await expect.poll(() => countParagraphs(first)).toBe(1)
     await expect.poll(() => textOf(first)).toBe('')
   })
 
@@ -110,7 +97,7 @@ test.describe('单人编辑', () => {
       )
     })
 
-    await expect(first.getByRole('textbox', { name: '文档正文' }).locator('p')).toHaveCount(2)
+    await expect.poll(() => countParagraphs(first)).toBe(2)
     await expect.poll(() => textOf(first)).toBe('粘贴第一行\n粘贴第二行')
   })
 })
@@ -141,10 +128,7 @@ test.describe('双端协作', () => {
     await focusEditor(second)
     await second.keyboard.press('Home')
 
-    await Promise.all([
-      first.keyboard.type('甲'),
-      second.keyboard.type('乙'),
-    ])
+    await Promise.all([first.keyboard.type('甲'), second.keyboard.type('乙')])
 
     await expect.poll(async () => (await textOf(first)) === (await textOf(second))).toBe(true)
     const merged = await textOf(first)
@@ -162,9 +146,10 @@ test.describe('双端协作', () => {
     await first.keyboard.type('abcdef')
     await expect.poll(() => textOf(second)).toBe('abcdef')
 
-    // 两次独立的选区删除，每次都等到本端渲染稳定再继续。
-    await focusEditor(second)
+    // 两次独立的选区删除；每次都在本端渲染稳定后再操作，
+    // 避免按键落在内容尚未同步完成的空编辑器上。
     await expect.poll(() => textOf(second)).toBe('abcdef')
+    await focusEditor(second)
     await second.keyboard.press('Home')
     await second.keyboard.press('Shift+ArrowRight')
     await second.keyboard.press('Delete')
@@ -188,7 +173,7 @@ test.describe('双端协作', () => {
     await first.keyboard.press('Enter')
     await first.keyboard.type('第二段')
 
-    await expect(second.getByRole('textbox', { name: '文档正文' }).locator('p')).toHaveCount(2)
+    await expect.poll(() => countParagraphs(second)).toBe(2)
     await expect.poll(() => textOf(second)).toBe('第一段\n第二段')
   })
 
