@@ -1,5 +1,30 @@
 # DOM Collaborative Editor Implementation Plan
 
+> **执行状态（2026-09-21 补记）：** 任务 1–9 已按本计划实施完成。实际运行结果：
+> 后端 pytest 80 项、前端 Vitest 52 项、Playwright 端到端 27 项全部通过，
+> `scripts/verify.ps1` 退出码为 0。下列步骤复选框未逐条勾选，因为实施过程中存在
+> 若干与本计划不同的实测结论，逐条勾选会掩盖这些差异；实际交付内容以 `README.md`
+> 与代码为准。与计划的偏差：
+>
+> - **pycrdt 0.14.5 的实际 API**：差量编码是 `doc.get_update(state_vector)`，
+>   没有模块级 `get_update`；索引式删除是 `del text[a:b]`，没有 `text.delete()`。
+>   并且它的索引按 Python 码点计数，与 Yjs 的 UTF-16 码元不一致，多字节文本上会
+>   误删或抛 Rust panic。服务端只应用二进制更新、读取快照与编码状态，不按索引编辑
+>   正文，因此不受影响；该边界记录在 `backend/tests/test_crdt.py` 模块说明中。
+> - **端到端端口**：本机 8000/8001/5173 已被其他项目占用。按“不按端口结束未知进程”
+>   的要求，改用 8791（后端）与 5473（前端），可用环境变量覆盖。
+> - **受限网络**：若无法从官方源下载 Chromium，可用 `PLAYWRIGHT_CHROMIUM_PATH`
+>   指向本机已有的浏览器。
+> - **载荷类型的两处补充**：`ProviderState` 增加 `errorCode`（界面需要区分
+>   “文档不存在”），`SessionState` 增加 `paused`（待发送内容超限时暂停新增编辑），
+>   `DocumentSession` 增加 `events`（折叠调试面板的数据）。均为附加字段。
+> - **广播不回流给提交者**：提交者已经持有该内容且会收到 ACK，因此服务端广播时排除
+>   该连接。
+> - **PowerShell 脚本需要 UTF-8 BOM**：Windows PowerShell 5.1 对无 BOM 的 UTF-8
+>   脚本按系统代码页解析，中文会直接导致语法错误。
+> - **中文输入法验收未执行**：`docs/manual-ime-checklist.md` 全部标记为未执行，
+>   没有用合成 composition 事件冒充人工通过。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 交付可在两个浏览器中同段并发编辑、具有本地恢复和服务端持久化确认的 DOM 编辑器，并提供可重复的异常场景验证。
