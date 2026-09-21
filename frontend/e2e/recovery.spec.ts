@@ -9,6 +9,8 @@ import {
   openDocumentAt,
   readUpdates,
   saveStatus,
+  selectLeadingCharacters,
+  settleSelection,
   test,
 } from './fixtures'
 
@@ -39,18 +41,6 @@ class SqliteWriteLock {
 async function typeText(page: Page, text: string): Promise<void> {
   await focusEditor(page)
   await page.keyboard.insertText(text)
-}
-
-/** 用显式选区选中开头若干字符，避免点击落点带来的位置差异。 */
-async function selectLeadingCharacters(page: Page, count: number): Promise<void> {
-  await focusEditor(page)
-  await page.keyboard.press('Home')
-  for (let index = 0; index < count; index += 1) {
-    await page.keyboard.press('Shift+ArrowRight')
-  }
-  await expect
-    .poll(() => page.evaluate(() => String(window.getSelection()?.toString())))
-    .toHaveLength(count)
 }
 
 /** 等待界面稳定显示服务端已保存。 */
@@ -290,11 +280,13 @@ test.describe('并发与隔离', () => {
     await focusEditor(first)
     await first.keyboard.press('End')
     await first.keyboard.press('ArrowLeft')
+    await settleSelection(first)
     await first.keyboard.insertText('甲')
 
     await focusEditor(second)
     await second.keyboard.press('End')
     await second.keyboard.press('ArrowLeft')
+    await settleSelection(second)
     await second.keyboard.insertText('乙')
 
     await backend.gates.wait(firstGate)

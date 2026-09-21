@@ -3,6 +3,8 @@ import {
   editorText as textOf,
   expect,
   focusEditor,
+  selectLeadingCharacters,
+  settleSelection,
   test,
 } from './fixtures'
 
@@ -37,6 +39,7 @@ test.describe('单人编辑', () => {
     await expect.poll(() => textOf(first)).toBe('abcde')
 
     await first.keyboard.press('Home')
+    await settleSelection(first)
     await expect.poll(() => countParagraphs(first)).toBe(1)
     await first.keyboard.press('Delete')
     await expect.poll(() => textOf(first)).toBe('bcde')
@@ -53,6 +56,7 @@ test.describe('单人编辑', () => {
 
     // 打字后光标在第二段末尾，先回到段首，退格才会把两段合并。
     await first.keyboard.press('Home')
+    await settleSelection(first)
     await first.keyboard.press('Backspace')
     await expect.poll(() => countParagraphs(first)).toBe(1)
     await expect.poll(() => textOf(first)).toBe('第一段第二段')
@@ -78,6 +82,10 @@ test.describe('单人编辑', () => {
     await expect.poll(() => countParagraphs(first)).toBe(2)
 
     await first.keyboard.press('Control+A')
+    await settleSelection(first)
+    await expect
+      .poll(() => first.evaluate(() => String(window.getSelection()?.toString())))
+      .toContain('第一段')
     await first.keyboard.press('Delete')
     await expect.poll(() => countParagraphs(first)).toBe(1)
     await expect.poll(() => textOf(first)).toBe('')
@@ -146,17 +154,12 @@ test.describe('双端协作', () => {
     await first.keyboard.type('abcdef')
     await expect.poll(() => textOf(second)).toBe('abcdef')
 
-    // 两次独立的选区删除；每次都在本端渲染稳定后再操作，
-    // 避免按键落在内容尚未同步完成的空编辑器上。
-    await expect.poll(() => textOf(second)).toBe('abcdef')
-    await focusEditor(second)
-    await second.keyboard.press('Home')
-    await second.keyboard.press('Shift+ArrowRight')
+    // 两次独立的选区删除，每次都确认选区真的建立后再删。
+    await selectLeadingCharacters(second, 1)
     await second.keyboard.press('Delete')
     await expect.poll(() => textOf(second)).toBe('bcdef')
 
-    await second.keyboard.press('Home')
-    await second.keyboard.press('Shift+ArrowRight')
+    await selectLeadingCharacters(second, 1)
     await second.keyboard.press('Delete')
     await expect.poll(() => textOf(second)).toBe('cdef')
 

@@ -97,8 +97,12 @@ export class BackendProcess {
     // 只清理自己创建、且确实位于临时根目录下的目录。
     const root = resolve(tmpdir())
     const target = resolve(this.databaseDirectory)
-    if (target.startsWith(root) && existsSync(target)) {
+    if (!target.startsWith(root) || !existsSync(target)) return
+    try {
       rmSync(target, { recursive: true, force: true })
+    } catch {
+      // 刚被终止的进程在 Windows 上可能还持有数据库文件句柄，清理失败不影响
+      // 测试结论；临时目录由操作系统回收，不该因此判定用例失败。
     }
   }
 
@@ -218,8 +222,53 @@ export async function editorParagraphCount(page: Page): Promise<number> {
   return page.getByRole('textbox', { name: '文档正文' }).locator('p').count()
 }
 
+/**
+ * 点击正文并等到它真的拿到焦点。
+ *
+ * 点击与焦点生效之间是异步的；不等这一步就发按键，事件会落到 body 上，
+ * 编辑内核收不到，表现为「按了没反应」的随机失败。
+ */
 export async function focusEditor(page: Page): Promise<void> {
   await page.getByRole('textbox', { name: '文档正文' }).click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.activeElement?.getAttribute('aria-label') === '文档正文',
+      ),
+    )
+    .toBe(true)
+}
+
+/**
+ * 等待浏览器派发 selectionchange、编辑内核跟上 DOM 选区。
+ *
+ * 键盘扩展选区后，DOM 选区会立刻变化，但编辑内核要等 selectionchange 才更新它
+ * 自己的 selection。这中间发出的删除键会按旧选区执行，表现为「按了没反应」。
+ */
+export async function settleSelection(page: Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => setTimeout(resolve, 0))
+      }),
+  )
+}
+
+/**
+ * 用显式选区选中当前段落的开头若干字符。
+ *
+ * 先确认选区真的建立起来了再返回，避免后续删除落在一个尚未扩展的选区上。
+ */
+export async function selectLeadingCharacters(page: Page, count: number): Promise<void> {
+  await focusEditor(page)
+  await page.keyboard.press('Home')
+  for (let index = 0; index < count; index += 1) {
+    await page.keyboard.press('Shift+ArrowRight')
+  }
+  const readSelection = (): Promise<string> =>
+    page.evaluate(() => String(window.getSelection()?.toString()))
+  await expect.poll(readSelection).toHaveLength(count)
+  await settleSelection(page)
 }
 
 export async function openDocumentAt(page: Page, documentId: string): Promise<void> {
