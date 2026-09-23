@@ -14,7 +14,9 @@
 
 设计与计划见 [`docs/superpowers/specs/`](docs/superpowers/specs/) 与
 [`docs/superpowers/plans/`](docs/superpowers/plans/)（2026-09-21 的首版设计与自研协议路线
-已被 2026-09-23 的精简方案替代）。演示步骤见 [`docs/demo.md`](docs/demo.md)。
+已被 2026-09-23 的精简方案替代）。演示步骤见 [`docs/demo.md`](docs/demo.md)，
+本机与局域网运行见 [`docs/local-and-lan.md`](docs/local-and-lan.md)，
+实际验收结果与未验证边界见 [`docs/offline-lan-validation.md`](docs/offline-lan-validation.md)。
 
 ## 环境要求
 
@@ -27,7 +29,7 @@
 ## 安装
 
 ```bash
-uv venv --python 'D:\Python\python.exe' backend/.venv
+uv venv --python 3.12 backend/.venv
 ```
 
 ```bash
@@ -201,16 +203,22 @@ ACK / 屏障系统加回来。
 ```text
 backend/app/documents.py      文档目录（sqlite3）与服务端种子构造
 backend/app/collaboration.py  库对象组装、先恢复再开放同步、停机写回
-backend/app/main.py           应用工厂、lifespan、HTTP 与 WebSocket 路由
+backend/app/main.py           应用工厂、lifespan、HTTP 与 WebSocket 路由、可选静态目录
 frontend/src/documents/api.ts       HTTP 文档接口
 frontend/src/documents/session.ts   三个库对象的生命周期与连接状态
+frontend/src/documents/backup.ts    备份格式、校验、编解码与纯文本预览
+frontend/src/documents/DocumentBackup.vue  导出、预览、打开原文档、确认合并
+frontend/src/offline.ts       页面外壳缓存的注册与状态（不接触正文）
+frontend/src/clipboard.ts     剪贴板能力检测与成功/失败结果
 frontend/src/editor/EditorPane.vue  编辑器实例、剪贴板、撤销/重做
 frontend/src/editor/extensions.ts   最小编辑 schema 与 Collaboration
 frontend/src/App.vue                页面入口与路由（含打开代次）
 backend/tests/uvicorn_launcher.py   仅测试使用的启动器，支持从标准输入请求正常停止
-frontend/e2e/fixtures.ts            每个用例独立的后端进程与浏览器上下文
+frontend/e2e/fixtures.ts            开发套件：每个用例独立的后端进程与浏览器上下文
+frontend/e2e-production/fixtures.ts 生产套件：真实构建产物与 setOffline 离线验收
 scripts/dev.ps1                     开发启动入口（强制结束语义）
-scripts/verify.ps1                  有序运行全部自动验证
+scripts/serve.ps1                   构建版前台启动，支持显式 TLS，Ctrl+C 正常停止
+scripts/verify.ps1                  有序运行全部自动验证（含生产套件）
 ```
 
 不要指望在这些文件里找到：消息编解码、发送队列、事务标识、确认语义、握手屏障、
@@ -222,7 +230,14 @@ scripts/verify.ps1                  有序运行全部自动验证
   没有账号与访问控制。公开部署前需要单独设计权限、访问限制与运维。
 - **无远端光标、无在线名单、无历史版本**：首版范围之外。
 - **撤销范围**：刷新页面后保留正文，但不保留上一会话的撤销栈。
-- **完全离线加载**：本地恢复的前提是页面资源能够加载；不做 Service Worker 缓存。
+- **离线页面缓存**：构建版会缓存页面外壳，整站断网后刷新仍能打开。但正文能否离线看到，
+  取决于当前浏览器在当前地址下是否打开过该文档并写过本地缓存；首次访问必须联网。
+  局域网 HTTP 不是安全上下文，完整离线刷新需要可信 HTTPS，见
+  [本地与局域网运行指南](docs/local-and-lan.md)。
+- **换地址不共享本地数据**：浏览器按 origin 隔离存储，改协议/主机名/端口后未同步的内容
+  需要用页面底部的备份面板导出再导入。
+- **不提供「立即更新」**：检测到新版本只提示，结束编辑后关闭全部页面重新打开才更新，
+  避免自动刷新打断正在写的人。
 - **pycrdt 索引式编辑**：pycrdt 0.14.5 的 `del text[a:b]` 按 Python 码点计数，与 Yjs 的
   UTF-16 码元不一致，在含非 BMP 字符（emoji 等）的文本上会误删或抛 Rust panic。
   真实客户端的编辑由浏览器里的 Yjs 完成，服务端只搬运二进制更新，因此不受影响；

@@ -28,9 +28,9 @@ $python = Join-Path $root 'backend\.venv\Scripts\python.exe'
 
 if (-not (Test-Path $python)) {
     Write-Host '未找到后端虚拟环境，请先执行：' -ForegroundColor Yellow
-    Write-Host "  uv venv --python 'D:\Python\python.exe' backend/.venv"
+    Write-Host '  uv venv --python 3.12 backend/.venv'
     Write-Host '  uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock'
-    Write-Host '  npm --prefix frontend install'
+    Write-Host '  npm --prefix frontend ci'
     exit 1
 }
 
@@ -56,9 +56,16 @@ $steps = @(
         Args    = @('--prefix', 'frontend', 'run', 'build')
     },
     @{
-        Name    = '端到端测试'
+        Name    = '端到端测试（开发模式）'
         Command = 'npm'
         Args    = @('--prefix', 'frontend', 'run', 'test:e2e')
+    },
+    @{
+        # 必须在上一步的 build 之后运行：这一个套件用真实构建产物和
+        # context.setOffline(true) 验证整站断网刷新，只断后端证明不了。
+        Name    = '端到端测试（生产构建版）'
+        Command = 'npm'
+        Args    = @('--prefix', 'frontend', 'run', 'test:e2e:production')
     }
 )
 

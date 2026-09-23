@@ -8,7 +8,16 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 backend/data/
+
+# 用户导出的文档备份：可能含有真实正文，不进入版本控制
+*.collab-backup.json
+
+# 本地可信证书与私钥：绝不提交
+.local-certs/
 
 # Node
 frontend/node_modules/

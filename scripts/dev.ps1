@@ -38,7 +38,7 @@ $nodeModules = Join-Path $root 'frontend\node_modules'
 
 if (-not (Test-Path $python)) {
     Write-Host '未找到后端虚拟环境 backend/.venv，请先执行：' -ForegroundColor Yellow
-    Write-Host "  uv venv --python 'D:\Python\python.exe' backend/.venv"
+    Write-Host '  uv venv --python 3.12 backend/.venv'
     Write-Host '  uv pip compile backend/requirements.in --python-version 3.12 --generate-hashes --output-file backend/requirements.lock'
     Write-Host '  uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock'
     exit 1
