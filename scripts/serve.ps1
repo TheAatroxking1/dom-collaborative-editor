@@ -82,7 +82,11 @@ $env:COLLAB_STATIC_DIR = (Resolve-Path $staticDirectory).Path
 
 $serverArgs = @(
     '-m', 'uvicorn', 'app.main:app', '--app-dir', 'backend',
-    '--host', $HostAddress, '--port', "$Port", '--workers', '1'
+    '--host', $HostAddress, '--port', "$Port", '--workers', '1',
+    # 停机必须有时限：uvicorn 默认不设上限，会先给每个连接发关闭帧再无限期等待
+    # 它们结束。浏览器被强制关闭时连接可能一直不收敛，Ctrl+C 就会永远停不下来，
+    # 应用写回完整状态的那一步也不会执行。
+    '--timeout-graceful-shutdown', '10'
 )
 if ($useTls) {
     $serverArgs += @('--ssl-certfile', $CertFile, '--ssl-keyfile', $KeyFile)

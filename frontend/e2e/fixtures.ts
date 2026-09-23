@@ -231,7 +231,19 @@ export async function settleSelection(page: Page): Promise<void> {
 /** 用显式选区选中当前段落的开头若干字符。 */
 export async function selectLeadingCharacters(page: Page, count: number): Promise<void> {
   await focusEditor(page)
-  await page.keyboard.press('Home')
+  // 先确认光标真的回到段首再扩展：点击定位与 Home 生效之间是异步的，
+  // 若此时就开始扩展，选区会从中途开始，长度永远到不了预期。
+  const atParagraphStart = (): Promise<boolean> =>
+    page.evaluate(() => window.getSelection()?.anchorOffset === 0)
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.keyboard.press('Home')
+    try {
+      await expect.poll(atParagraphStart, { timeout: 2000 }).toBe(true)
+      break
+    } catch {
+      // 再按一次 Home；仍不成功就交给下面的长度断言报错。
+    }
+  }
   for (let index = 0; index < count; index += 1) {
     await page.keyboard.press('Shift+ArrowRight')
   }

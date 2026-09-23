@@ -45,6 +45,23 @@ export const ALTERNATE_ORIGIN = `http://localhost:${PRODUCTION_PORT}`
  */
 export const BUILD_B_MARKER = '<!-- build-b -->'
 
+/** 正常停止的结果。超时与非零退出都要让用例失败，所以这里带上退出码。 */
+export type ShutdownResult = {
+  exited: boolean
+  code: number | null
+}
+
+/** 把退出异常整理成可读信息，并附上服务端原始日志。 */
+function describeShutdownFailure(result: ShutdownResult, logs: string): string | null {
+  if (!result.exited) {
+    return `服务未在 ${SHUTDOWN_TIMEOUT_MS} ms 内正常退出；服务端原始日志：\n${logs}`
+  }
+  if (result.code !== 0) {
+    return `服务退出码为 ${String(result.code)}（期望 0）；服务端原始日志：\n${logs}`
+  }
+  return null
+}
+
 const READY_POLL_INTERVAL_MS = 100
 const READY_TIMEOUT_MS = 30_000
 const SHUTDOWN_TIMEOUT_MS = 20_000
@@ -118,10 +135,15 @@ export class ProductionServer {
     return this.logLines.join('')
   }
 
-  /** 通过 stdin 请求正常停止；返回进程是否在时限内退出。 */
-  async stopGracefully(): Promise<boolean> {
+  /**
+   * 通过 stdin 请求正常停止，并等待进程退出。
+   *
+   * 返回退出码而不是布尔值：正常停机必须是退出码 0，「超时」和「非零退出」是两种
+   * 不同的异常，调用方都要让用例失败，不能只打印日志。
+   */
+  async stopGracefully(): Promise<ShutdownResult> {
     const child = this.child
-    if (child === null) return true
+    if (child === null) return { exited: true, code: 0 }
     child.stdin?.write('stop\n')
     const exited = await new Promise<boolean>((done) => {
       if (child.exitCode !== null || child.signalCode !== null) return done(true)
@@ -131,8 +153,9 @@ export class ProductionServer {
         done(true)
       })
     })
+    const code = child.exitCode
     if (exited) this.child = null
-    return exited
+    return { exited, code }
   }
 
   async kill(): Promise<void> {
@@ -303,10 +326,23 @@ export async function settleSelection(page: Page): Promise<void> {
  *
  * 逐次扩展后确认选区长度真的到了预期值，再等编辑内核跟上，然后才返回：
  * 连续按键可能落在同一次 DOM 更新之前，直接删会少删或多删。
+ *
+ * 还要先确认光标确实回到段首——点击定位与 Home 生效之间是异步的，若此时就开始
+ * 扩展，选区会从中途开始，长度永远到不了预期。
  */
 export async function selectLeadingCharacters(page: Page, count: number): Promise<void> {
   await focusEditor(page)
-  await page.keyboard.press('Home')
+  const atParagraphStart = (): Promise<boolean> =>
+    page.evaluate(() => window.getSelection()?.anchorOffset === 0)
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await page.keyboard.press('Home')
+    try {
+      await expect.poll(atParagraphStart, { timeout: 2000 }).toBe(true)
+      break
+    } catch {
+      // 再按一次 Home；仍不成功就交给下面的长度断言报错。
+    }
+  }
   for (let index = 0; index < count; index += 1) {
     await page.keyboard.press('Shift+ArrowRight')
   }
@@ -357,17 +393,31 @@ type Fixtures = {
 export const test = base.extend<Fixtures>({
   server: async ({}, use) => {
     const server = await ProductionServer.start()
+
+    /** 停止服务并清理临时目录；返回退出异常的描述（正常为 null）。 */
+    const shutdown = async (): Promise<string | null> => {
+      const result = await server.stopGracefully()
+      const failure = describeShutdownFailure(result, server.logs)
+      if (!result.exited) await server.kill()
+      server.cleanup()
+      return failure
+    }
+
     try {
       await use(server)
-    } finally {
-      // 正常停止，不用 kill：这样也能顺带验证 lifespan 收尾不会报错。
-      const stopped = await server.stopGracefully()
-      if (!stopped) {
-        console.error('[production] 服务未在时限内正常退出，将强制结束')
-        console.error(server.logs)
-        await server.kill()
+    } catch (error) {
+      // 用例自身已经失败：退出异常只记录，不覆盖原始失败信息。
+      const failure = await shutdown()
+      if (failure !== null) {
+        console.error(`[production] 服务退出异常（原用例已失败，不覆盖其错误）：${failure}`)
       }
-      server.cleanup()
+      throw error
+    }
+
+    // 用例通过：此时退出异常必须让整个用例失败，而不是只打印一行日志。
+    const failure = await shutdown()
+    if (failure !== null) {
+      throw new Error(`[production] ${failure}`)
     }
   },
 
