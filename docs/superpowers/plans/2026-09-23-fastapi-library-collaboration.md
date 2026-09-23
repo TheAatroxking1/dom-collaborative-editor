@@ -19,7 +19,29 @@
 - 不引入 Node.js 后端、Redis、ORM、通用事件总线或插件架构。
 - 不无条件升级现有前端依赖，不修改全局开发环境。
 
-设计依据：[精简方案](../specs/2026-09-23-fastapi-library-collaboration-design.md)。该设计的 A1–A10 是验收依据；本计划尚未执行。
+设计依据：[精简方案](../specs/2026-09-23-fastapi-library-collaboration-design.md)。该设计的 A1–A10 是验收依据。
+
+> **执行状态（2026-09-23 补记）：** Task 1–5 已实施完成。最终验证：后端 pytest 33 项、
+> 前端 Vitest 17 项、类型检查、构建、Playwright 端到端 31 项（覆盖 A1–A10）全部通过，
+> `scripts/verify.ps1` 退出码 0。
+>
+> 与计划的偏差：
+>
+> - **`ASGIWebsocket` 没有从包顶层导出**，需从 `pycrdt.websocket.asgi_server` 取。
+> - **store 的 `__aenter__`/`__aexit__` 必须成对在同一任务里执行**，否则 anyio 会拒绝
+>   退出别的任务创建的取消作用域。房间是按连接按需创建的，因此改用低层
+>   `start()`/`stop()` 并自己持有任务；这也让停机时的写入顺序完全可控。
+> - **`create_sync_message` 等构造器产出的是含外层 `YMessageType` 的完整帧**，而
+>   `handle_sync_message` 消费的是去掉外层字节的载荷，两者不能混用。
+> - **库会把更新广播给发送者自己**，测试客户端需要吃掉这帧回流。
+> - **控制台中断在 Windows 上是 CTRL_BREAK_EVENT**，不是 SIGINT；已验证它能触发
+>   lifespan 收尾流程。测试用启动器因此改为持有 `uvicorn.Server` 并从标准输入
+>   请求停止，不把任何停止控制放进正式路由。
+> - **Playwright 的 `unrouteAll` 不覆盖 WebSocket 路由**，离线刷新用例改为用一个
+>   常驻的 `routeWebSocket` 处理器加可控开关。
+> - **Windows 剪贴板把 `\n` 规范化为 `\r\n`**，复制正文的断言需要先统一换行。
+> - **pycrdt 0.14.5 的索引式删除在多字节文本上仍会误删或 panic**：测试里刻意只用
+>   ASCII 构造删除用例，并在 README 与用例说明中记录该边界。
 
 ## 0. 起点与交付方式
 
