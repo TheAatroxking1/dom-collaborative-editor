@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { EditorContent, useEditor } from '@tiptap/vue-3'
+import type { Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
 import { onBeforeUnmount, ref } from 'vue'
 import type * as Y from 'yjs'
 
@@ -11,6 +12,20 @@ const props = defineProps<{
 
 const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
 const copyFallback = ref<string | null>(null)
+
+/**
+ * 把一段纯文本转成行内内容，换行还原成 HardBreak。
+ *
+ * 用于重建粘贴位置前后的既有内容，避免把段内的软换行压成字面换行。
+ */
+function inlineNodes(schema: Schema, text: string): ProseMirrorNode[] {
+  const nodes: ProseMirrorNode[] = []
+  text.split('\n').forEach((part, index) => {
+    if (index > 0) nodes.push(schema.node('hardBreak'))
+    if (part.length > 0) nodes.push(schema.text(part))
+  })
+  return nodes
+}
 
 /**
  * 编辑器只在正文根结构就绪后挂载：挂载过早会让 y-tiptap 依据空文档补一份默认
@@ -27,10 +42,14 @@ const editor = useEditor({
       spellcheck: 'false',
     },
     /**
-     * 粘贴只取 text/plain。
+     * 粘贴只取 text/plain，并按内容决定是行内插入还是拆段。
      *
      * ProseMirror 默认在剪贴板同时提供 HTML 与纯文本时优先用 HTML；这里显式改用
-     * 纯文本，按换行拆成段落，不经过 innerHTML。
+     * 纯文本，不经过 innerHTML。
+     *
+     * 关键是不能把任何粘贴都当成「完整段落」：在 ab|cd 处粘贴 X 必须是 abXcd，
+     * 而不是 ab / X / cd 三段。只有真正带换行的内容才拆段，且首行接前缀、
+     * 末行接后缀。
      */
     handlePaste: (view, event) => {
       const clipboard = (event as ClipboardEvent).clipboardData
@@ -38,24 +57,33 @@ const editor = useEditor({
       const text = clipboard.getData('text/plain')
       if (text.length === 0) return false
 
+      const normalized = text.replace(/\r\n?/g, '\n')
       const { state, dispatch } = view
-      const { from, to, $from } = state.selection
-      const paragraphs = text
-        .replace(/\r\n?/g, '\n')
-        .split('\n')
-        .map((line) =>
-          line.length === 0
-            ? state.schema.node('paragraph')
-            : state.schema.node('paragraph', null, [state.schema.text(line)]),
-        )
+      const { from, to, $from, $to } = state.selection
+      const { schema } = state
 
-      // 光标停在空段落里时替换整个段落：否则会把内容插进空段落内部，
-      // 留下一个多余的空行。
-      const onEmptyParagraph =
-        from === to && $from.parent.isTextblock && $from.parent.content.size === 0
-      const start = onEmptyParagraph ? $from.before($from.depth) : from
-      const end = onEmptyParagraph ? $from.after($from.depth) : to
+      if (!normalized.includes('\n')) {
+        // 单行粘贴：作为行内文本插入，与选区替换语义一致。
+        dispatch(state.tr.insertText(normalized, from, to).scrollIntoView())
+        return true
+      }
 
+      const lines = normalized.split('\n')
+      const prefix = $from.parent.textBetween(0, $from.parentOffset, undefined, '\n')
+      const suffix = $to.parent.textBetween($to.parentOffset, $to.parent.content.size, undefined, '\n')
+      const last = lines[lines.length - 1] ?? ''
+
+      const paragraphs = [
+        schema.node('paragraph', null, inlineNodes(schema, prefix + (lines[0] ?? ''))),
+        ...lines
+          .slice(1, -1)
+          .map((line) => schema.node('paragraph', null, inlineNodes(schema, line))),
+        schema.node('paragraph', null, inlineNodes(schema, last + suffix)),
+      ]
+
+      // 替换整个段落范围（含被重建的前后缀），这样同一段内与跨段的选区都能正确处理。
+      const start = $from.before($from.depth)
+      const end = $to.after($to.depth)
       dispatch(state.tr.replaceWith(start, end, paragraphs).scrollIntoView())
       return true
     },

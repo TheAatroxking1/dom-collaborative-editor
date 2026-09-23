@@ -36,6 +36,9 @@ export const TEARDOWN_TIMEOUT_MS = 10_000
 /** 服务端在文档不存在时使用的关闭码。 */
 export const CLOSE_DOCUMENT_NOT_FOUND = 4404
 
+/** 文档不存在是终态：不会被后续的连接事件覆盖。 */
+export const DOCUMENT_MISSING = '文档不存在'
+
 export const BODY_FIELD = 'body'
 
 /** 本地缓存恢复失败（含超时）。调用方应丢弃这个会话并重新打开。 */
@@ -133,14 +136,21 @@ export async function openDocumentSession(documentId: string): Promise<DocumentS
         : event.status === 'connecting'
           ? 'connecting'
           : 'disconnected'
+    // 连接成功必须清掉上一次的连接错误：否则重连成功后会同时显示
+    // 「已连接」和「连接出错，正在重试」。文档不存在属于终态，保留它。
+    if (connection.value === 'connected' && error.value !== DOCUMENT_MISSING) {
+      error.value = null
+    }
   }
   const onClosed = (event: { code: number; reason: string }): void => {
     if (event.code === CLOSE_DOCUMENT_NOT_FOUND) {
-      error.value = '文档不存在'
+      error.value = DOCUMENT_MISSING
       connection.value = 'disconnected'
     }
   }
   const onConnectionError = (): void => {
+    // 文档不存在是终态，不要被后续的重试文案覆盖。
+    if (error.value === DOCUMENT_MISSING) return
     error.value = '连接出错，正在重试'
   }
 
@@ -157,7 +167,9 @@ export async function openDocumentSession(documentId: string): Promise<DocumentS
     error,
     retry(): void {
       if (closed) return
-      error.value = null
+      // 已经连上就不要改写连接状态：重试不该把「已连接」变成「正在连接」。
+      if (connection.value === 'connected') return
+      if (error.value !== DOCUMENT_MISSING) error.value = null
       connection.value = 'connecting'
       network?.connect()
     },

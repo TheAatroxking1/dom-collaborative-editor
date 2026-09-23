@@ -93,6 +93,56 @@ test.describe('单人编辑', () => {
     await expect.poll(() => textOf(first)).toBe('')
   })
 
+  test('在段落中间粘贴单行文本不会拆成三段', async ({ first, openDocument }) => {
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('abcd')
+
+    // 光标移到 ab 与 cd 之间，粘贴不含换行的文本。
+    await first.keyboard.press('Home')
+    await settleSelection(first)
+    await first.keyboard.press('ArrowRight')
+    await settleSelection(first)
+    await first.keyboard.press('ArrowRight')
+    await settleSelection(first)
+
+    await first.getByRole('textbox', { name: '文档正文' }).evaluate((element) => {
+      const data = new DataTransfer()
+      data.setData('text/plain', 'X')
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+      )
+    })
+
+    // 必须是 abXcd 一段，而不是 ab / X / cd 三段。
+    await expect.poll(() => countParagraphs(first)).toBe(1)
+    await expect.poll(() => textOf(first)).toBe('abXcd')
+  })
+
+  test('在段落中间粘贴多行文本时首行接前缀、末行接后缀', async ({ first, openDocument }) => {
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('abcd')
+
+    await first.keyboard.press('Home')
+    await settleSelection(first)
+    for (let index = 0; index < 2; index += 1) {
+      await first.keyboard.press('ArrowRight')
+      await settleSelection(first)
+    }
+
+    await first.getByRole('textbox', { name: '文档正文' }).evaluate((element) => {
+      const data = new DataTransfer()
+      data.setData('text/plain', 'X\nY')
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+      )
+    })
+
+    await expect.poll(() => countParagraphs(first)).toBe(2)
+    await expect.poll(() => textOf(first)).toBe('abX\nYcd')
+  })
+
   test('粘贴只取纯文本，且按换行拆成段落', async ({ first, openDocument }) => {
     await openDocument(first)
     await focusEditor(first)

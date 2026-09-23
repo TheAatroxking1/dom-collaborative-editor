@@ -76,11 +76,15 @@ async function applyRoute(): Promise<void> {
   }
 
   opening.value = true
+
+  // 先恢复本地缓存，再校验文档是否存在。
+  //
+  // 顺序不能颠倒：HTTP 校验在服务端断开时必然失败，如果因为它失败就直接退出，
+  // 本地缓存里的正文就永远没机会恢复，「断线仍可编辑、刷新不丢内容」这条能力
+  // 会被整体破坏。所以先拿到会话，再决定要不要因为服务端的状态放弃它。
+  let opened: DocumentSession
   try {
-    // 打开前先确认文档存在，缺失时给出明确提示而不是一直等待。
-    await readDocument(next)
-    // 校验期间路由可能又变了：这次结果已经过期，直接放弃。
-    if (generation !== openGeneration) return
+    opened = await openDocumentSession(next)
   } catch (error) {
     if (generation !== openGeneration) return
     opening.value = false
@@ -88,21 +92,41 @@ async function applyRoute(): Promise<void> {
     return
   }
 
-  try {
-    const opened = await openDocumentSession(next)
-    if (generation !== openGeneration) {
-      // 结果已过期：释放掉，不要覆盖当前会话。
-      void opened.close()
-      return
-    }
+  if (generation !== openGeneration) {
+    // 结果已过期：释放掉，不要覆盖当前会话。
+    void opened.close()
+    return
+  }
+
+  // 本地已经有正文：即便服务端不可达也允许继续编辑。
+  if (opened.canMountEditor.value) {
     session.value = opened
     sessionKey.value += 1
     opening.value = false
+    return
+  }
+
+  // 本地没有正文，必须由服务端提供种子；此时校验文档是否存在。
+  try {
+    await readDocument(next)
+    if (generation !== openGeneration) {
+      void opened.close()
+      return
+    }
   } catch (error) {
-    if (generation !== openGeneration) return
+    if (generation !== openGeneration) {
+      void opened.close()
+      return
+    }
+    await opened.close()
     opening.value = false
     routeError.value = error instanceof Error ? error.message : String(error)
+    return
   }
+
+  session.value = opened
+  sessionKey.value += 1
+  opening.value = false
 }
 
 onMounted(() => {

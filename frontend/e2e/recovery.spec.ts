@@ -115,6 +115,48 @@ test.describe('断线编辑与恢复', () => {
     await waitUntilStored(backend, documentId, '23456789')
   })
 
+  test('后端完全断开时刷新，仍从本地缓存恢复正文', async ({ backend, first, openDocument }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('断开前已缓存')
+    await expect.poll(() => textOf(first)).toBe('断开前已缓存')
+    await waitUntilStored(backend, documentId, '断开前已缓存')
+
+    // 后端整个停掉：HTTP 与 WebSocket 都不可达。
+    await backend.kill()
+    await first.reload()
+
+    // 缓存里有正文就必须显示出来。
+    // 如果打开流程先做 HTTP 校验、失败即退出，这里会变成错误提示而不是编辑器。
+    await expect(first.getByRole('textbox', { name: '文档正文' })).toBeVisible()
+    await expect.poll(() => textOf(first)).toBe('断开前已缓存')
+
+    // 断线期间还能继续编辑。
+    await focusEditor(first)
+    await first.keyboard.press('End')
+    await first.keyboard.insertText('，断线期间追加')
+    await expect.poll(() => textOf(first)).toBe('断开前已缓存，断线期间追加')
+
+    // 后端回来后内容合并上去。
+    await backend.restart()
+    await waitForConnected(first)
+    await expect
+      .poll(() => backend.readStoredText(documentId), { timeout: 20_000 })
+      .toBe('断开前已缓存，断线期间追加')
+  })
+
+  test('后端断开且本地没有缓存时，明确报错而不是空白页', async ({ backend, first }) => {
+    const documentId = await backend.createDocument()
+    await backend.kill()
+
+    await first.goto(`/#/documents/${documentId}`)
+
+    // 没有本地内容可恢复：必须给出可理解的提示，并且不挂载编辑器。
+    await expect(first.getByText(/无法连接服务端/)).toBeVisible({ timeout: 20_000 })
+    await expect(first.getByRole('textbox', { name: '文档正文' })).toHaveCount(0)
+    await expect(first.getByRole('button', { name: '重试' })).toBeVisible()
+  })
+
   test('只阻断 WebSocket 时刷新，正文从本地缓存恢复', async ({ backend, first, openDocument }) => {
     const documentId = await openDocument(first)
     await focusEditor(first)

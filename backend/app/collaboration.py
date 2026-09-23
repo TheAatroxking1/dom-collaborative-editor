@@ -29,6 +29,13 @@ from .documents import BODY_FIELD, new_seed_document  # noqa: F401  (BODY_FIELD 
 #: 停机时单个文档写完整状态的等待上限。超时说明存储已不可用，必须如实上报。
 SHUTDOWN_WRITE_TIMEOUT_SECONDS = 10.0
 
+#: 等待 store 初始化完成的上限。
+#:
+#: 库的 ``start()`` 会先把 ``started`` 置位，``_init_db`` 在后台任务里跑；后台失败
+#: 时 ``db_initialized`` 永远不会置位，任何 ``await`` 都会一直挂住。所以这里用有界
+#: 探针确认存储真的可用，而不是无限等待。
+STORE_START_TIMEOUT_SECONDS = 10.0
+
 
 class StorageUnavailable(RuntimeError):
     """CRDT 存储不可用：调用方应返回 503 或关闭码 1013。"""
@@ -52,15 +59,43 @@ def store_class_for(database_path: Path) -> type[SQLiteYStore]:
 
 
 async def _apply_store_state(document: Doc, store: SQLiteYStore) -> bool:
-    """把存储里的更新重放进文档。返回是否读到过内容。"""
+    """把存储里的更新重放进文档。返回是否读到过内容。
+
+    与 ``_probe_store`` 同理：异常路径上也要显式关闭生成器，否则会把库内部的锁留下。
+    """
     applied = False
+    iterator = store.read()
     try:
-        async for update, _metadata, _timestamp in store.read():
+        async for update, _metadata, _timestamp in iterator:
             document.apply_update(update)
             applied = True
     except YDocNotFound:
         return False
+    finally:
+        with contextlib.suppress(Exception):
+            await iterator.aclose()
     return applied
+
+
+async def _probe_store(store: SQLiteYStore) -> None:
+    """确认 store 真的可用。
+
+    空存储会抛 ``YDocNotFound``，这是正常情况；初始化失败时库会让这一步一直挂住，
+    由调用方用超时兜住。
+
+    必须显式关闭这个异步生成器：库的 ``read()`` 在内部持有锁，提前 ``return`` 会把
+    生成器连同已获取的锁一起留下，之后所有读写都会报「当前任务未持有该锁」，
+    而 ``read()`` 又把这个异常转成 ``YDocNotFound``，表现为「存储里什么都没有」。
+    """
+    iterator = store.read()
+    try:
+        async for _update, _metadata, _timestamp in iterator:
+            return
+    except YDocNotFound:
+        return
+    finally:
+        with contextlib.suppress(Exception):
+            await iterator.aclose()
 
 
 async def read_document_state(database_path: Path, document_id: str) -> Doc:
@@ -87,9 +122,15 @@ async def read_document_state(database_path: Path, document_id: str) -> Doc:
 class Collaboration:
     """协作房间与存储的生命周期管理。"""
 
-    def __init__(self, database_path: Path | str, log: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        database_path: Path | str,
+        log: logging.Logger | None = None,
+        store_class: type[SQLiteYStore] | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
-        self._store_class = store_class_for(self.database_path)
+        # store_class 是给测试用的注入口：生产路径永远走 store_class_for。
+        self._store_class = store_class or store_class_for(self.database_path)
         self._log = log or logging.getLogger("collab")
         self._server = WebsocketServer(
             # 房间初始不 ready：状态恢复完成前不向客户端同步。
@@ -169,17 +210,31 @@ class Collaboration:
     # --- 文档创建 ---------------------------------------------------------
 
     async def create_document_state(self, document_id: str) -> None:
-        """写入唯一的空段落种子。
+        """写入唯一的空段落种子，并确认它真的落盘了。
 
         必须先成功返回，调用方才可以把文档登记进目录；失败时文档对客户端不可见，
         不会出现「能打开但正文是半初始化」的文档。
+
+        这里必须回读确认，而不是只等 ``write()`` 返回：库把 sqlite 的异常交给了
+        ``sqlite_anyio.exception_logger``，那个处理器返回 True 表示「已处理」，
+        ``async with`` 会正常退出。也就是说 SQL 失败（例如库被锁、文件只读）会被
+        静默吞掉，只靠 try/except 捕获不到。
         """
         if self._shutting_down:
             raise StorageUnavailable("服务正在关闭")
+
         store = self._store_class(path=document_id)
         try:
             async with store:
                 await store.write(new_seed_document().get_update())
+                stored = await asyncio.wait_for(
+                    _apply_store_state(Doc(), store), timeout=STORE_START_TIMEOUT_SECONDS
+                )
+                if not stored:
+                    # 写调用没抛错，但读回来是空的：种子没有落盘，不能发布这个文档。
+                    raise StorageUnavailable("种子写入后读不回内容，存储可能不可写")
+        except StorageUnavailable:
+            raise
         except Exception as error:  # noqa: BLE001 - 统一转成存储不可用
             raise StorageUnavailable(str(error)) from error
 
@@ -243,22 +298,50 @@ class Collaboration:
     # --- 存储与失败处理 ---------------------------------------------------
 
     async def _open_store(self, document_id: str) -> SQLiteYStore:
-        """启动一个文档的 store。
+        """启动一个文档的 store，并确认它真的可用。
 
         这里刻意不用 ``async with store``：房间是随连接按需创建的，而 store 的
         ``__aexit__`` 必须与 ``__aenter__`` 在同一个任务里执行，否则 anyio 会拒绝
         退出别的任务创建的取消作用域。改用低层 ``start()/stop()``，自己持有一个
         任务，启动与停止就不再和调用者绑在同一个任务上。
+
+        也不能只等 ``started``：库会先置位它，再在后台跑 ``_init_db``；后台失败时
+        ``db_initialized`` 永不置位，前台会一直等待，还会一直占着初始化锁把其他
+        文档也堵住。所以这里用有界探针。
         """
         existing = self._stores.get(document_id)
         if existing is not None:
             return existing
+        if self._shutting_down:
+            raise StorageUnavailable("服务正在关闭")
+
         store = self._store_class(path=document_id)
         task = asyncio.create_task(store.start())
-        await store.started.wait()
+        try:
+            await store.started.wait()
+            await asyncio.wait_for(
+                _probe_store(store), timeout=STORE_START_TIMEOUT_SECONDS
+            )
+        except (Exception, asyncio.CancelledError) as error:
+            await self._discard_store(store, task)
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            raise StorageUnavailable(f"存储无法启动：{error}") from error
+
         self._stores[document_id] = store
         self._store_tasks[document_id] = task
         return store
+
+    async def _discard_store(
+        self, store: SQLiteYStore, task: asyncio.Task[None]
+    ) -> None:
+        """丢弃一个启动失败的 store，确保不留下后台任务或半开的数据库。"""
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        # 失败路径上 store 可能从未真正跑起来，stop() 会报「未运行」，忽略即可。
+        with contextlib.suppress(BaseException):
+            await store.stop()
 
     async def _close_store(self, document_id: str) -> None:
         store = self._stores.pop(document_id, None)

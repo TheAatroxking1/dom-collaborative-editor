@@ -253,4 +253,54 @@ describe('连接状态映射', () => {
     expect(session.connection.value).toBe('connecting')
     expect(session.error.value).toBeNull()
   })
+
+  test('重连成功后不再残留连接错误', async () => {
+    const session = await open('doc-error-cleared')
+    const socket = FakeWebSocket.instances[0]
+    socket?.open()
+    await expect.poll(() => session.connection.value).toBe('connected')
+
+    // 连接出错：显示错误并退回未连接。
+    socket?.onerror?.(new Event('error'))
+    await expect.poll(() => session.error.value).toBe('连接出错，正在重试')
+
+    // 重连成功必须清掉这条错误，否则界面会同时显示「已连接」和「连接出错」。
+    socket?.open()
+    await expect.poll(() => session.connection.value).toBe('connected')
+    expect(session.error.value).toBeNull()
+  })
+
+  test('已连接时重试不会把状态改回正在连接', async () => {
+    const session = await open('doc-retry-while-connected')
+    const socket = FakeWebSocket.instances[0]
+    socket?.open()
+    await expect.poll(() => session.connection.value).toBe('connected')
+
+    session.retry()
+
+    // 已经连上就不该被改写成「正在连接」。
+    expect(session.connection.value).toBe('connected')
+
+    // 等一拍，确认状态没有被异步事件带偏。
+    await new Promise((settle) => setTimeout(settle, 30))
+    expect(session.connection.value).toBe('connected')
+  })
+
+  test('文档不存在是终态，不会被后续连接事件覆盖', async () => {
+    const session = await open('doc-missing-terminal')
+    const socket = FakeWebSocket.instances[0]
+    socket?.open()
+
+    socket?.serverClose(CLOSE_DOCUMENT_NOT_FOUND)
+    await expect.poll(() => session.error.value).toBe('文档不存在')
+
+    // 后续的连接错误提示不能把「文档不存在」盖掉。
+    socket?.onerror?.(new Event('error'))
+    await new Promise((settle) => setTimeout(settle, 20))
+    expect(session.error.value).toBe('文档不存在')
+
+    // 重试也不该清掉它。
+    session.retry()
+    expect(session.error.value).toBe('文档不存在')
+  })
 })
