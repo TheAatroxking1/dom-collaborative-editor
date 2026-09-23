@@ -7,6 +7,11 @@
     只启动本脚本自己创建的两个子进程，并在退出时按 PID 终止它们（含各自的
     子进程树）。不会按端口去结束未知进程——那些可能是其他项目正在使用的服务。
 
+    **这是强制结束，不是正常停止。** 子进程运行在独立窗口里，收不到本终端的
+    Ctrl+C，因此脚本只能用 taskkill /T /F 结束它们。强制结束意味着服务端不会
+    执行停机时的完整状态写入。需要验证正常关闭时，请改用 README 里的两个终端
+    方式，在跑后端的那个终端按 Ctrl+C。
+
     默认端口刻意避开 5173 与 8000：这两个端口在开发机上经常被其他项目或 Docker
     占用。确实需要时用 -BackendPort / -FrontendPort 指定。
 
@@ -87,7 +92,8 @@ try {
 
     Write-Host ''
     Write-Host "打开 http://127.0.0.1:$FrontendPort 开始使用。" -ForegroundColor Green
-    Write-Host '按 Ctrl+C 结束，本脚本只会关闭它自己启动的进程。' -ForegroundColor DarkGray
+    Write-Host '按 Ctrl+C 结束。注意：本脚本会用 taskkill /T /F 强制结束它启动的子进程，' -ForegroundColor DarkGray
+    Write-Host '服务端不会执行停机时的完整状态写入。需要正常关闭见 README 的两个终端方式。' -ForegroundColor DarkGray
     Write-Host ''
 
     # 任一子进程退出即结束脚本，避免留下半个环境。

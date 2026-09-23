@@ -43,7 +43,8 @@ composition 事件都会绕过输入法的组合阶段，因此不能用来宣�
 
 - 中文与 emoji 的写入、刷新恢复：`frontend/e2e/editor.spec.ts` › 新建文档后地址栏带上文档标识
 - 远端更新期间本地编辑不丢字：`frontend/e2e/editor.spec.ts` › 两人在同一段内同时输入
-- 跨语言二进制互通（含中文与 emoji）：`frontend/tests/interop.test.ts`
+- 远端更新期间本端选区不被重置：`frontend/e2e/editor.spec.ts` › 远端更新期间本端焦点与选区不被重置
+- 前端库与 Python 服务端的二进制互通（含中文与 emoji）：`frontend/tests/library-interop.test.ts`
 
 ## 判读说明
 
