@@ -4,6 +4,7 @@ import {
   expect,
   focusEditor,
   openDocumentAt,
+  pasteText,
   selectLeadingCharacters,
   settleSelection,
   test,
@@ -141,6 +142,66 @@ test.describe('单人编辑', () => {
 
     await expect.poll(() => countParagraphs(first)).toBe(2)
     await expect.poll(() => textOf(first)).toBe('abX\nYcd')
+  })
+
+  test('粘贴多行后继续输入，光标在粘贴内容之后而不是末尾', async ({ first, openDocument }) => {
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('abcd')
+
+    // 光标移到 ab 与 cd 之间。
+    await first.keyboard.press('Home')
+    await settleSelection(first)
+    for (let index = 0; index < 2; index += 1) {
+      await first.keyboard.press('ArrowRight')
+      await settleSelection(first)
+    }
+
+    await pasteText(first, 'X\nY')
+    await expect.poll(() => textOf(first)).toBe('abX\nYcd')
+
+    // 接着输入必须落在 abX 与 cd 的交界处，而不是整个文档末尾。
+    await first.keyboard.insertText('Z')
+    await expect.poll(() => textOf(first)).toBe('abX\nYZcd')
+  })
+
+  test('全选后粘贴多行文本不会报错', async ({ first, openDocument }) => {
+    const errors: string[] = []
+    first.on('pageerror', (error) => errors.push(error.message))
+    first.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text())
+    })
+
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('原有内容')
+    await first.keyboard.press('Enter')
+    await first.keyboard.insertText('第二段')
+    await expect.poll(() => countParagraphs(first)).toBe(2)
+
+    await first.keyboard.press('Control+A')
+    await settleSelection(first)
+    await pasteText(first, 'X\nY')
+
+    // 全选时选区跨越整个文档，不能因为取不到段落边界而抛异常。
+    await expect.poll(() => countParagraphs(first)).toBe(2)
+    await expect.poll(() => textOf(first)).toBe('X\nY')
+    expect(errors.filter((entry) => entry.includes('position before'))).toEqual([])
+  })
+
+  test('全选后粘贴单行文本，接着输入不会覆盖粘贴内容', async ({ first, openDocument }) => {
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('原有内容')
+
+    await first.keyboard.press('Control+A')
+    await settleSelection(first)
+    await pasteText(first, 'X')
+    await expect.poll(() => textOf(first)).toBe('X')
+
+    // 光标应在 X 之后，继续输入是追加而不是覆盖。
+    await first.keyboard.insertText('Z')
+    await expect.poll(() => textOf(first)).toBe('XZ')
   })
 
   test('粘贴只取纯文本，且按换行拆成段落', async ({ first, openDocument }) => {

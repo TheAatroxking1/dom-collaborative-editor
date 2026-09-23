@@ -98,6 +98,18 @@ async def _probe_store(store: SQLiteYStore) -> None:
             await iterator.aclose()
 
 
+async def _store_holds_state(store: SQLiteYStore, document: Doc) -> bool:
+    """确认存储里的内容与给定文档完全一致。
+
+    用状态向量比较：重放存储里的全部更新后，状态向量相同即说明存储持有同一份历史。
+    这是写入之后的必要校验——库会静默吞掉 SQL 异常，``write()`` 返回不代表写成功。
+    """
+    restored = Doc()
+    if not await _apply_store_state(restored, store):
+        return False
+    return restored.get_state() == document.get_state()
+
+
 async def read_document_state(database_path: Path, document_id: str) -> Doc:
     """用官方 store 直接读取某个文档的状态。
 
@@ -184,14 +196,22 @@ class Collaboration:
             store = room.ystore
             if store is None:
                 continue
+            document = room.ydoc
             try:
+                # 与创建文档同理：库会静默吞掉 sqlite 异常，write() 返回不代表写成功。
+                # 必须在写入后回读比对，否则停机时会把「没写进去」记录成写入成功。
                 await asyncio.wait_for(
-                    store.write(room.ydoc.get_update()),
+                    store.write(document.get_update()),
                     timeout=SHUTDOWN_WRITE_TIMEOUT_SECONDS,
                 )
+                if not await asyncio.wait_for(
+                    _store_holds_state(store, document),
+                    timeout=SHUTDOWN_WRITE_TIMEOUT_SECONDS,
+                ):
+                    raise RuntimeError("写入后读回的状态与内存不一致，最新修改没有落盘")
                 self._log.info("停机已写入文档 %s", document_id)
             except TimeoutError:
-                message = f"{document_id}：写入超时（{SHUTDOWN_WRITE_TIMEOUT_SECONDS} 秒）"
+                message = f"{document_id}：写入或校验超时（{SHUTDOWN_WRITE_TIMEOUT_SECONDS} 秒）"
                 failures.append(message)
                 self._log.error("停机写入超时：%s", document_id)
             except Exception as error:  # noqa: BLE001 - 任何写入失败都要上报

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import type { Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
+import { TextSelection } from '@tiptap/pm/state'
 import { onBeforeUnmount, ref } from 'vue'
 import type * as Y from 'yjs'
 
@@ -42,14 +43,16 @@ const editor = useEditor({
       spellcheck: 'false',
     },
     /**
-     * 粘贴只取 text/plain，并按内容决定是行内插入还是拆段。
+     * 粘贴只取 text/plain，并按内容与选区决定插入方式。
      *
      * ProseMirror 默认在剪贴板同时提供 HTML 与纯文本时优先用 HTML；这里显式改用
      * 纯文本，不经过 innerHTML。
      *
-     * 关键是不能把任何粘贴都当成「完整段落」：在 ab|cd 处粘贴 X 必须是 abXcd，
-     * 而不是 ab / X / cd 三段。只有真正带换行的内容才拆段，且首行接前缀、
-     * 末行接后缀。
+     * 两个容易出错的点：
+     * 1. 不能把任何粘贴都当成「完整段落」：在 ab|cd 处粘贴 X 必须是 abXcd。
+     * 2. 全选（Ctrl+A）时选区跨越整个文档，段落边界取不到，直接算会抛
+     *    「There is no position before the top-level node」。
+     * 另外粘贴之后必须显式给出光标位置，否则接着输入会错位或覆盖刚粘贴的内容。
      */
     handlePaste: (view, event) => {
       const clipboard = (event as ClipboardEvent).clipboardData
@@ -62,29 +65,53 @@ const editor = useEditor({
       const { from, to, $from, $to } = state.selection
       const { schema } = state
 
-      if (!normalized.includes('\n')) {
-        // 单行粘贴：作为行内文本插入，与选区替换语义一致。
-        dispatch(state.tr.insertText(normalized, from, to).scrollIntoView())
+      // 选区完全落在一个文本块内时，单行内容按行内插入处理。
+      const insideOneBlock = $from.depth > 0 && $to.depth > 0 && $from.sameParent($to)
+      if (!normalized.includes('\n') && insideOneBlock) {
+        const tr = state.tr.insertText(normalized, from, to)
+        // 光标落在插入内容之后，接着输入才是接着写而不是覆盖。
+        tr.setSelection(TextSelection.create(tr.doc, from + normalized.length))
+        dispatch(tr.scrollIntoView())
         return true
       }
 
+      // 其余情况按段落替换处理。
+      //
+      // 深度为 0 说明选区跨越整个文档（例如 Ctrl+A 的全选）：此时没有段落边界可
+      // 依据，直接使用选区边界，也没有前后缀需要保留。
+      const atTopLevel = $from.depth === 0 || $to.depth === 0
+      const start = atTopLevel ? from : $from.before($from.depth)
+      const end = atTopLevel ? to : $to.after($to.depth)
+      const prefix = atTopLevel
+        ? ''
+        : $from.parent.textBetween(0, $from.parentOffset, undefined, '\n')
+      const suffix = atTopLevel
+        ? ''
+        : $to.parent.textBetween($to.parentOffset, $to.parent.content.size, undefined, '\n')
+
       const lines = normalized.split('\n')
-      const prefix = $from.parent.textBetween(0, $from.parentOffset, undefined, '\n')
-      const suffix = $to.parent.textBetween($to.parentOffset, $to.parent.content.size, undefined, '\n')
       const last = lines[lines.length - 1] ?? ''
+      // 只有一行时不能套用「首行 + 末行」的模板：lines[0] 与 last 是同一行，
+      // 会被插入两次变成两段。它出现在这里是因为选区跨段落或覆盖整个文档。
+      const paragraphs =
+        lines.length === 1
+          ? [schema.node('paragraph', null, inlineNodes(schema, prefix + last + suffix))]
+          : [
+              schema.node('paragraph', null, inlineNodes(schema, prefix + (lines[0] ?? ''))),
+              ...lines
+                .slice(1, -1)
+                .map((line) => schema.node('paragraph', null, inlineNodes(schema, line))),
+              schema.node('paragraph', null, inlineNodes(schema, last + suffix)),
+            ]
 
-      const paragraphs = [
-        schema.node('paragraph', null, inlineNodes(schema, prefix + (lines[0] ?? ''))),
-        ...lines
-          .slice(1, -1)
-          .map((line) => schema.node('paragraph', null, inlineNodes(schema, line))),
-        schema.node('paragraph', null, inlineNodes(schema, last + suffix)),
-      ]
-
-      // 替换整个段落范围（含被重建的前后缀），这样同一段内与跨段的选区都能正确处理。
-      const start = $from.before($from.depth)
-      const end = $to.after($to.depth)
-      dispatch(state.tr.replaceWith(start, end, paragraphs).scrollIntoView())
+      const tr = state.tr.replaceWith(start, end, paragraphs)
+      // 光标放在最后一行粘贴内容之后、原有后缀之前。
+      // 用段落自身的大小累加，不依赖映射的边界语义。
+      let cursor = tr.mapping.map(start)
+      for (const paragraph of paragraphs.slice(0, -1)) cursor += paragraph.nodeSize
+      cursor += 1 + last.length
+      tr.setSelection(TextSelection.create(tr.doc, cursor))
+      dispatch(tr.scrollIntoView())
       return true
     },
   },

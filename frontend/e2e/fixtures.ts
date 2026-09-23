@@ -241,6 +241,29 @@ export async function selectLeadingCharacters(page: Page, count: number): Promis
   await settleSelection(page)
 }
 
+/**
+ * 在编辑器里触发一次粘贴。
+ *
+ * 同时提供 text/html 时内容与 text/plain 不同，用来确认真的只取了纯文本。
+ */
+export async function pasteText(
+  page: Page,
+  plain: string,
+  html = '<p>HTML内容</p><p>不该出现</p>',
+): Promise<void> {
+  await page.getByRole('textbox', { name: '文档正文' }).evaluate(
+    (element, payload) => {
+      const data = new DataTransfer()
+      data.setData('text/plain', payload.plain)
+      data.setData('text/html', payload.html)
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+      )
+    },
+    { plain, html },
+  )
+}
+
 export async function openDocumentAt(page: Page, documentId: string): Promise<void> {
   await page.goto(`/#/documents/${documentId}`)
   await expect(page.getByRole('textbox', { name: '文档正文' })).toBeVisible()

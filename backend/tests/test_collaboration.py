@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import stat
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,71 @@ def test_shutdown_reports_write_failure(data_directory: Path):
         with pytest.raises(StorageUnavailable):
             await collaboration.close()
         assert collaboration.failures
+
+    run(scenario())
+
+
+def test_shutdown_detects_silently_failed_write(data_directory: Path):
+    """停机时「写入没报错但没落盘」也必须被发现。
+
+    与创建文档同一类问题：库的 exception_logger 把 sqlite 异常当作「已处理」吞掉，
+    ``store.write()`` 会正常返回。只等它返回就会把停机记录成「已写入」，
+    而重新读取时拿不到最新内容。
+
+    这里用一个写入静默失败、读取走真实存储的替身来精确模拟这个行为：
+    不能靠把数据库文件改成只读来触发——Windows 上只读属性不会撤销已打开的写句柄。
+    """
+
+    async def scenario() -> None:
+        path = updates_path(data_directory)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        collaboration = Collaboration(path)
+        await collaboration.start()
+        document_id = new_document_id()
+        await collaboration.create_document_state(document_id)
+        room = await collaboration.get_ready_room(document_id)
+        real_store = room.ystore
+        assert real_store is not None
+
+        class SilentlyDroppingWrite:
+            """写入被吞掉：既不报错也不落盘，读取仍然是真实存储。"""
+
+            async def write(self, _data: bytes) -> None:
+                return None
+
+            def read(self):
+                return real_store.read()
+
+        room.ystore = SilentlyDroppingWrite()  # type: ignore[assignment]
+        write_into_first_paragraph(room.ydoc, "停机前的新修改")
+
+        with pytest.raises(StorageUnavailable):
+            await collaboration.close()
+
+        # 失败必须是被检测出来的，而不是被记录成成功。
+        assert collaboration.failures, "停机写入静默失败却没有被记录"
+        assert any("不一致" in failure or "读回" in failure for failure in collaboration.failures)
+
+    run(scenario())
+
+
+def test_shutdown_success_is_recorded_as_success(data_directory: Path):
+    """正常停机时不产生失败记录，内容确实可读回。"""
+
+    async def scenario() -> None:
+        collaboration = Collaboration(updates_path(data_directory))
+        await collaboration.start()
+        document_id = new_document_id()
+        await collaboration.create_document_state(document_id)
+        room = await collaboration.get_ready_room(document_id)
+        write_into_first_paragraph(room.ydoc, "正常停机的内容")
+
+        await collaboration.close()
+        assert collaboration.failures == []
+
+        restored = await read_document_state(updates_path(data_directory), document_id)
+        assert first_paragraph_text(restored) == "正常停机的内容"
 
     run(scenario())
 
