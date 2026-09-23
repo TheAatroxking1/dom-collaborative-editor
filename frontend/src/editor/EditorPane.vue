@@ -3,6 +3,7 @@ import { EditorContent, useEditor } from '@tiptap/vue-3'
 import type { Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
 import { onBeforeUnmount, ref } from 'vue'
+import type { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 
 import { tryCopyText } from '../clipboard'
@@ -10,6 +11,8 @@ import { editorExtensions } from './extensions'
 
 const props = defineProps<{
   doc: Y.Doc
+  /** 会话已有的网络 Provider：协作光标复用它的 Awareness，不另建连接。 */
+  provider: WebsocketProvider
 }>()
 
 const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
@@ -34,7 +37,7 @@ function inlineNodes(schema: Schema, text: string): ProseMirrorNode[] {
  * 段落，等于每个客户端都往共享文档里塞一次初始化内容。
  */
 const editor = useEditor({
-  extensions: editorExtensions(props.doc),
+  extensions: editorExtensions(props.doc, props.provider),
   editorProps: {
     attributes: {
       class: 'editor-body',

@@ -293,8 +293,21 @@ export async function simulateInsecureContext(page: Page): Promise<void> {
 
 export async function editorText(page: Page): Promise<string> {
   const paragraphs = page.getByRole('textbox', { name: '文档正文' }).locator('p')
-  const texts = await paragraphs.allInnerTexts()
-  return texts.map((text) => text.replace(/\n+$/, '')).join('\n')
+  // 逐个段落取文本，并先移除协作者光标的装饰 DOM：访客名不是正文，
+  // 用 allInnerTexts 会把它读进来，让同步断言出现假差异。
+  // 段内的 <br> 是 HardBreak，按既有语义还原成换行。
+  return paragraphs.evaluateAll((nodes) =>
+    nodes
+      .map((node) => {
+        const copy = node.cloneNode(true) as HTMLElement
+        copy
+          .querySelectorAll('.collaboration-carets__caret')
+          .forEach((caret) => caret.remove())
+        copy.querySelectorAll('br').forEach((br) => br.replaceWith('\n'))
+        return (copy.textContent ?? '').replace(/\n+$/, '')
+      })
+      .join('\n'),
+  )
 }
 
 export async function focusEditor(page: Page): Promise<void> {

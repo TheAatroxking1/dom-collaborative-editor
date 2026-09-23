@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import * as Y from 'yjs'
 import { IndexeddbPersistence, storeState } from 'y-indexeddb'
+import { WebsocketProvider } from 'y-websocket'
 
 import {
   CACHE_PREFIX,
@@ -302,5 +303,35 @@ describe('连接状态映射', () => {
     // 重试也不该清掉它。
     session.retry()
     expect(session.error.value).toBe('文档不存在')
+  })
+})
+
+describe('会话暴露的 Provider', () => {
+  test('返回绑定该会话文档的现有 Provider', async () => {
+    const session = await open('doc-provider')
+
+    // 协作光标、鼠标与段落选区都复用这一个 Provider，不另建连接。
+    expect(session.provider).toBeInstanceOf(WebsocketProvider)
+    expect(session.provider.doc).toBe(session.doc)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  test('关闭时清空本地 Awareness，不让临时状态留在别人那一侧', async () => {
+    const session = await open('doc-awareness')
+    FakeWebSocket.instances[0]?.open()
+    await expect.poll(() => session.connection.value).toBe('connected')
+
+    session.provider.awareness.setLocalStateField('pointer', { paragraph: null, x: 0, y: 0 })
+    expect(session.provider.awareness.getLocalState()).not.toBeNull()
+
+    await session.close()
+    expect(session.provider.awareness.getLocalState()).toBeNull()
+  })
+
+  test('重复关闭不会抛错', async () => {
+    const session = await open('doc-close-twice')
+    await session.close()
+    await session.close()
+    expect(session.provider.awareness.getLocalState()).toBeNull()
   })
 })

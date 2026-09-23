@@ -299,6 +299,7 @@ function retry(): void {
         v-if="canMount && session !== null"
         :key="sessionKey"
         :doc="session.doc"
+        :provider="session.provider"
       />
       <p v-else-if="!opening && statusText.length === 0" class="info-text">
         正在等待服务端提供文档正文…

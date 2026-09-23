@@ -316,3 +316,26 @@ h1 {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.85rem;
 }
+
+/* 协作者光标与文字选区。装饰不参与正文，也不抢事件。 */
+.collaboration-carets__caret {
+  border-left: 1px solid;
+  margin-left: -1px;
+  position: relative;
+  pointer-events: none;
+  word-break: normal;
+}
+
+.collaboration-carets__label {
+  position: absolute;
+  left: -1px;
+  bottom: 100%;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  color: white;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}

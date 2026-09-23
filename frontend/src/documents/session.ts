@@ -17,6 +17,13 @@ type ConnectionStatus = 'connected' | 'connecting' | 'disconnected'
 
 export interface DocumentSession {
   doc: Y.Doc
+  /**
+   * 本会话的网络 Provider。
+   *
+   * 协作者光标、鼠标与段落选区都复用它的 Awareness——临时状态只此一份，
+   * 不另外创建 Provider 或 Awareness，也不绕过「先恢复缓存再连接」的顺序。
+   */
+  readonly provider: WebsocketProvider
   /** 正文根结构就绪前不挂载编辑器，避免客户端各自补一份默认段落。 */
   canMountEditor: ShallowRef<boolean>
   connection: ShallowRef<ConnectionState>
@@ -162,6 +169,7 @@ export async function openDocumentSession(documentId: string): Promise<DocumentS
 
   const session: DocumentSession = {
     doc,
+    provider: network,
     canMountEditor,
     connection,
     error,
@@ -182,6 +190,10 @@ export async function openDocumentSession(documentId: string): Promise<DocumentS
       network?.off('status', onStatus)
       network?.off('closed', onClosed)
       network?.off('connection-error', onConnectionError)
+
+      // 关掉本地 Awareness 再销毁 Provider：否则这个客户端的光标、鼠标和段落选区
+      // 会作为遗留状态继续留在其他人那一侧，直到旧条目超时。
+      network?.awareness.setLocalState(null)
       network?.destroy()
       network = null
 
