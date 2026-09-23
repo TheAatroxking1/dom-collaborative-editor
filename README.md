@@ -74,6 +74,17 @@ npm --prefix frontend run dev
 在这个终端按 **Ctrl+C** 结束后端，uvicorn 会走正常关闭流程。前端开发服务器在另一个
 终端，同样用 Ctrl+C。
 
+**构建版**（一个进程同时提供页面、API 与 WebSocket，前台运行，Ctrl+C 正常停止）：
+
+```bash
+pwsh -File scripts/serve.ps1
+```
+
+需要先构建一次：`npm --prefix frontend ci` 然后 `npm --prefix frontend run build`。
+默认地址 <http://127.0.0.1:5274>。构建版用 5274、开发版用 5273，两者分开是为了避免
+已安装的生产 Service Worker 接管开发页面。**切换模式前先停掉另一个后端**——即使端口
+不同，也不要有两个 Python 进程同时写同一个数据目录。
+
 打开 <http://127.0.0.1:5273>，点「新建文档」，把地址栏里的链接复制到另一个浏览器
 （或另一个浏览器配置文件）打开即可协作。**不要用同一窗口的两个标签页**——虽然也支持，
 但看不到跨端同步的效果。
@@ -94,6 +105,7 @@ COLLAB_BACKEND_URL=http://127.0.0.1:9000 COLLAB_DEV_PORT=5300 npm --prefix front
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |
 | `COLLAB_DATA_DIR` | `backend/data/v2` | 数据目录，里面放两个数据库文件 |
+| `COLLAB_STATIC_DIR` | 未设置 | 设置后由同一进程提供该目录下的构建产物；未设置时只是 API/WS 服务 |
 | `COLLAB_BACKEND_URL` | `http://127.0.0.1:8787` | Vite 开发代理指向的后端 |
 | `COLLAB_DEV_PORT` | `5273` | Vite 开发服务器端口 |
 

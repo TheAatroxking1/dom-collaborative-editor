@@ -1,7 +1,8 @@
-"""FastAPI 应用工厂：文档接口与标准 Yjs WebSocket 入口。
+"""FastAPI 应用工厂：文档接口、标准 Yjs WebSocket 入口，以及可选的静态页面服务。
 
-FastAPI 在这里只承担三件事：文档目录接口、WebSocket 前的存在性校验、以及把连接
-交给库处理。协议、合并、广播与持久化都不在本文件内实现。
+FastAPI 在这里只承担四件事：文档目录接口、WebSocket 前的存在性校验、把连接交给库
+处理，以及在显式配置时把构建好的前端资源一并提供出去。协议、合并、广播与持久化都
+不在本文件内实现。
 
 导入本模块不连接也不创建数据库：目录与存储都推迟到 lifespan 启动阶段，
 这样测试可以在导入之后再决定数据目录。
@@ -15,8 +16,9 @@ import os
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
+from starlette.staticfiles import StaticFiles
 
 from .collaboration import Collaboration, StorageUnavailable
 from .documents import (
@@ -34,6 +36,9 @@ CLOSE_DOCUMENT_NOT_FOUND = 4404
 #: 服务暂时不可用（存储故障或正在停机），可稍后重试。
 CLOSE_TRY_AGAIN_LATER = 1013
 
+#: 静态入口占用的路径前缀。这些前缀永远不交给静态文件处理。
+RESERVED_PREFIXES = ("api", "ws")
+
 
 def normalize_document_id(raw: str) -> str | None:
     """把路径里的文档标识规范化为标准 UUID 字符串。
@@ -46,8 +51,22 @@ def normalize_document_id(raw: str) -> str | None:
         return None
 
 
-def create_app(data_directory: Path | str = DEFAULT_DATA_DIRECTORY) -> FastAPI:
+def create_app(
+    data_directory: Path | str = DEFAULT_DATA_DIRECTORY,
+    *,
+    static_directory: Path | str | None = None,
+) -> FastAPI:
     data_path = Path(data_directory)
+
+    # 静态目录在构造时就解析并校验：显式配置了不存在的目录应当立刻失败，
+    # 而不是等到第一个请求才发现页面打不开。
+    static_root: Path | None = None
+    if static_directory is not None:
+        static_root = Path(static_directory).resolve()
+        if not static_root.is_dir():
+            raise NotADirectoryError(
+                f"静态目录不存在或不是目录（未执行构建？）：{static_root}"
+            )
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -153,7 +172,40 @@ def create_app(data_directory: Path | str = DEFAULT_DATA_DIRECTORY) -> FastAPI:
         await websocket.accept()
         await collaboration.serve(normalized, websocket)
 
+    # --- 可选的静态页面服务 -------------------------------------------------
+    #
+    # 注册在所有 API/WS 路由之后，只处理 GET/HEAD。刻意不做「任意路径回退到
+    # index.html」：hash 路由只需要请求根路径，而全站回退会把拼错的资源路径和
+    # 未知 API 变成 200 HTML，掩盖真实错误。
+    if static_root is not None:
+        static_files = StaticFiles(directory=str(static_root), html=True)
+
+        @app.api_route(
+            "/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False
+        )
+        async def frontend_asset(asset_path: str, request: Request):
+            # api/ws 前缀永远不属于静态资源，即使目录里恰好有同名文件。
+            if asset_path in RESERVED_PREFIXES or asset_path.startswith(
+                tuple(f"{prefix}/" for prefix in RESERVED_PREFIXES)
+            ):
+                raise HTTPException(status_code=404)
+            try:
+                response = await static_files.get_response(asset_path or ".", request.scope)
+            except Exception as error:  # noqa: BLE001 - 统一转成 404，不泄漏内部路径
+                raise HTTPException(status_code=404) from error
+            # 页面与 SW 每次都要回源校验，否则浏览器可能一直用旧外壳；
+            # 构建产物带内容哈希，可以长期缓存。
+            response.headers["Cache-Control"] = (
+                "public, max-age=31536000, immutable"
+                if asset_path.startswith("assets/")
+                else "no-cache"
+            )
+            return response
+
     return app
 
 
-app = create_app(Path(os.environ.get("COLLAB_DATA_DIR", DEFAULT_DATA_DIRECTORY)))
+app = create_app(
+    Path(os.environ.get("COLLAB_DATA_DIR", DEFAULT_DATA_DIRECTORY)),
+    static_directory=os.environ.get("COLLAB_STATIC_DIR") or None,
+)
