@@ -1,5 +1,7 @@
 # DOM Collaborative Editor Implementation Plan
 
+> 历史计划：2026-09-23 起执行 [现成库精简实施计划](2026-09-23-fastapi-library-collaboration.md)。下文的自研 provider、ACK、事务重放与握手屏障要求已被替代，请勿继续按旧任务扩展实现。
+
 > **执行状态（2026-09-21 补记）：** 任务 1–9 已按本计划实施完成。实际运行结果：
 > 后端 pytest 80 项、前端 Vitest 52 项、Playwright 端到端 27 项全部通过，
 > `scripts/verify.ps1` 退出码为 0。下列步骤复选框未逐条勾选，因为实施过程中存在
