@@ -1,13 +1,11 @@
-import type { Editor } from '@tiptap/core'
-import { onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from 'vue'
-import type { WebsocketProvider } from 'y-websocket'
-import type * as Y from 'yjs'
+import { onBeforeUnmount, ref, shallowRef, watch, type Ref } from 'vue'
 
 import {
   isParagraphRef,
   locatePointer,
   projectPointer,
   readParagraphs,
+  type OverlayContext,
   type ParagraphRef,
   type ParagraphSnapshot,
 } from './paragraphs'
@@ -38,15 +36,6 @@ export function guestUser(clientId: number): GuestUser {
     name: `访客 ${clientId.toString(36)}`,
     color: GUEST_COLORS[clientId % GUEST_COLORS.length] as string,
   }
-}
-
-/** 测量与绘制共用的上下文。 */
-export type OverlayContext = {
-  editor: ShallowRef<Editor | undefined>
-  doc: Y.Doc
-  provider: WebsocketProvider
-  connected: Readonly<Ref<boolean>>
-  surface: Ref<HTMLElement | null>
 }
 
 /** 画在覆盖层上的远端指针。 */

@@ -8,6 +8,7 @@ import type * as Y from 'yjs'
 
 import { tryCopyText } from '../clipboard'
 import { editorExtensions } from './extensions'
+import { GUTTER_WIDTH, useParagraphSelection } from './paragraphSelection'
 import { usePresence } from './presence'
 
 const props = defineProps<{
@@ -132,13 +133,27 @@ const editor = useEditor({
   },
 })
 
-const { pointers, onPointerMove, onPointerLeave } = usePresence({
+const overlayContext = {
   editor,
   doc: props.doc,
   provider: props.provider,
   connected: computed(() => props.connected),
   surface,
-})
+}
+
+const { pointers, onPointerMove, onPointerLeave } = usePresence(overlayContext)
+
+const {
+  selectedCount,
+  rectangles,
+  dragRect,
+  onPointerDown,
+  onPointerMove: onSelectPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  onClickCapture,
+  clear: clearSelection,
+} = useParagraphSelection(overlayContext)
 
 onBeforeUnmount(() => {
   // 先销毁编辑视图，避免会话关闭后编辑内核仍持有 Y.Doc 订阅。
@@ -178,11 +193,21 @@ async function copyBody(): Promise<void> {
 
 <template>
   <div class="editor-pane">
+    <!--
+      选择相关的控件放在**同一行**工具栏里，不另起一行：新增一行会把正文整体向下推，
+      拖动过程中参考系跟着漂移，框选范围就算错了（实测拖动矩形被压成十几像素高）。
+    -->
     <div class="editor-toolbar">
       <button type="button" class="toolbar-button" @click="undo">撤销</button>
       <button type="button" class="toolbar-button" @click="redo">重做</button>
       <button type="button" class="toolbar-button" @click="copyBody">复制正文</button>
+      <template v-if="selectedCount > 0">
+        <span class="selection-count" data-selection-count>已选 {{ selectedCount }} 段</span>
+        <button type="button" class="toolbar-button" @click="clearSelection">清除选择</button>
+      </template>
     </div>
+
+    <p class="editor-hint">从正文左侧留白拖动可以选择整段；正文内拖动仍然是选中文字。</p>
 
     <p v-if="copyState === 'copied'" class="info-text">已复制正文</p>
     <p v-else-if="copyState === 'failed'" class="error-text">
@@ -199,8 +224,14 @@ async function copyBody(): Promise<void> {
     <div
       ref="surface"
       class="editor-surface"
-      @pointermove="onPointerMove"
+      tabindex="0"
+      :style="{ '--selection-gutter': `${GUTTER_WIDTH}px` }"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove($event), onSelectPointerMove($event)"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel"
       @pointerleave="onPointerLeave"
+      @click.capture="onClickCapture"
     >
       <EditorContent :editor="editor" />
       <!--
@@ -208,6 +239,38 @@ async function copyBody(): Promise<void> {
         正文 DOM 不被改写，装饰也不进入复制结果。
       -->
       <div class="presence-overlay" aria-hidden="true">
+        <!--
+          段落高亮：本机半透明，远端用该协作者的颜色画轮廓。
+          远端不复制发送者的框选矩形，只按同一段落引用显示选中状态。
+        -->
+        <span
+          v-for="(entry, index) in rectangles"
+          :key="`${entry.clientId ?? 'local'}:${index}`"
+          class="selection-highlight"
+          :class="{ 'selection-highlight--local': entry.local }"
+          :data-local-paragraph-selection="entry.local ? '' : undefined"
+          :data-remote-paragraph-selection="entry.local ? undefined : ''"
+          :style="{
+            left: `${entry.rect.left}px`,
+            top: `${entry.rect.top}px`,
+            width: `${entry.rect.width}px`,
+            height: `${entry.rect.height}px`,
+            borderColor: entry.local ? undefined : entry.color,
+          }"
+        ></span>
+
+        <span
+          v-if="dragRect !== null"
+          class="selection-drag"
+          data-selection-drag
+          :style="{
+            left: `${dragRect.left}px`,
+            top: `${dragRect.top}px`,
+            width: `${dragRect.width}px`,
+            height: `${dragRect.height}px`,
+          }"
+        ></span>
+
         <span
           v-for="pointer in pointers"
           :key="pointer.clientId"

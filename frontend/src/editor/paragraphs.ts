@@ -1,5 +1,7 @@
 import type { Editor } from '@tiptap/core'
 import type { Node as PMNode } from '@tiptap/pm/model'
+import type { Ref, ShallowRef } from 'vue'
+import type { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
 /**
@@ -26,6 +28,15 @@ export type ParagraphSnapshot = {
   to: number
   node: PMNode
   element: HTMLElement
+}
+
+/** 覆盖层需要的运行环境。三个协作者状态模块共用同一份。 */
+export type OverlayContext = {
+  editor: ShallowRef<Editor | undefined>
+  doc: Y.Doc
+  provider: WebsocketProvider
+  connected: Readonly<Ref<boolean>>
+  surface: Ref<HTMLElement | null>
 }
 
 /** 测量与绘制共用的上下文。 */
