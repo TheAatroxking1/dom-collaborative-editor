@@ -14,6 +14,9 @@ anyio==4.15.1 \
     # via
     #   httpx
     #   pycrdt
+    #   pycrdt-store
+    #   pycrdt-websocket
+    #   sqlite-anyio
     #   starlette
     #   watchfiles
 certifi==2026.7.22 \
@@ -192,6 +195,19 @@ pycrdt==0.14.5 \
     --hash=sha256:f348e29faf6b949cb5d44be7738756bfcac547e17d2e977b030e19cfea2af212 \
     --hash=sha256:f5676cffec7e2cb0bda98ccb42628384da63fb993c097f98ace4dc87e1d2b307 \
     --hash=sha256:fbe465540886bba6a510d0587f075611f6d9db6895f4bacaef0b5cd5a92111a5
+    # via
+    #   -r backend/requirements.in
+    #   pycrdt-store
+    #   pycrdt-websocket
+pycrdt-store==0.1.5 \
+    --hash=sha256:10cb0a71b86e167735235b3ab82816015ba746a2e660bcb133adb67a8d5c8818 \
+    --hash=sha256:5ef6978d363be01275ffc337567072050363fa18fd6a51f0a48917dc210025f2
+    # via
+    #   -r backend/requirements.in
+    #   pycrdt-websocket
+pycrdt-websocket==0.16.5 \
+    --hash=sha256:671ca2b4fa2e2c6d17eadb827e0a2c17b5b73d12bcc065abe66a8b838843ae10 \
+    --hash=sha256:bda0b9ad31468a9d664464fc28c1b112cfde274065eb75844aa19950fb59d282
     # via -r backend/requirements.in
 pydantic==2.13.5 \
     --hash=sha256:346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73 \
@@ -408,6 +424,10 @@ pyyaml==6.0.3 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via uvicorn
+sqlite-anyio==0.2.10 \
+    --hash=sha256:059d9d401f455fcfb6283770fcd6b42f8366d21cf9f256ff56d20f7ec1141b8f \
+    --hash=sha256:cb243834d370cf0c4273844f1621dddc825c20476db6cd26c23e4813d52bbe0b
+    # via pycrdt-store
 starlette==1.6.0 \
     --hash=sha256:a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c \
     --hash=sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b
@@ -420,6 +440,7 @@ typing-extensions==4.16.0 \
     #   fastapi
     #   pydantic
     #   pydantic-core
+    #   sqlite-anyio
     #   starlette
     #   typing-inspection
 typing-inspection==0.4.4 \
