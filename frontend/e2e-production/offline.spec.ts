@@ -1,4 +1,7 @@
+import type { Page } from '@playwright/test'
+
 import {
+  BUILD_B_MARKER,
   editorText,
   expect,
   focusEditor,
@@ -6,6 +9,7 @@ import {
   openDocumentAt,
   PRODUCTION_ORIGIN,
   selectLeadingCharacters,
+  simulateInsecureContext,
   test,
   waitForConnected,
   waitForServiceWorkerControl,
@@ -17,6 +21,18 @@ import {
  * 关键是 context.setOffline(true) 之后**整页刷新**：只切断后端或拦截 WebSocket
  * 都不足以证明页面本身还能打开——那两种情况页面资源仍然来自网络。
  */
+
+/** 读回当前页面外壳的实际内容。
+ *
+ * 请求经过 Service Worker，所以拿到的是它缓存并对外提供的那一份——
+ * 用来判断现在生效的到底是版本 A 还是版本 B。
+ */
+async function servedShell(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const response = await fetch('/index.html')
+    return response.text()
+  })
+}
 
 test.describe('页面外壳离线缓存', () => {
   test('断网后整页刷新，页面来自 Service Worker 且正文与离线修改都在', async ({
@@ -169,10 +185,34 @@ test.describe('页面外壳离线缓存', () => {
       await fresh.close()
     }
   })
+  test('生产构建版下不显示「只在构建版启用」的提示', async ({ server, page }) => {
+    // 必须带上 server 夹具：它是按用例启动服务的，不请求就不会有服务在监听。
+    await server.createDocument()
+    await page.goto(`${PRODUCTION_ORIGIN}/`)
+    await expect(page.getByRole('button', { name: '新建文档' })).toBeVisible()
+    await expect(page.getByText(/离线页面缓存只在构建版启用/)).toHaveCount(0)
+  })
+
+  test('地址不支持离线缓存时，文档页也要说明', async ({ browser, server }) => {
+    // 直接打开协作链接的人不经过首页；只在首页提示等于对这些人没有提示。
+    const context = await browser.newContext({ serviceWorkers: 'allow' })
+    const page = await context.newPage()
+    await simulateInsecureContext(page)
+    try {
+      const documentId = await server.createDocument()
+      await page.goto(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
+      await expect(page.getByRole('textbox', { name: '文档正文' })).toBeVisible()
+
+      await expect(page.getByText(/无法启用离线页面缓存/)).toBeVisible()
+      await expect(page.getByText(/HTTPS/)).toBeVisible()
+    } finally {
+      await context.close()
+    }
+  })
 })
 
 test.describe('版本更新不打断编辑', () => {
-  test('两个编辑页遇到新版本都不自动刷新，关闭全部页面后可更新', async ({ server, context, browser }) => {
+  test('两个编辑页遇到新版本都不自动刷新，关闭全部页面后可更新', async ({ server, context }) => {
     const documentId = await server.createDocument()
 
     const first = await context.newPage()
@@ -181,6 +221,9 @@ test.describe('版本更新不打断编辑', () => {
     await second.goto(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
     await waitForServiceWorkerControl(first)
     await second.reload()
+
+    // 起点：现在生效的是版本 A。
+    expect(await servedShell(first)).not.toContain(BUILD_B_MARKER)
 
     await focusEditor(first)
     await first.keyboard.insertText('编辑中内容')
@@ -207,16 +250,40 @@ test.describe('版本更新不打断编辑', () => {
     await first.keyboard.insertText('仍在编辑')
     await expect.poll(() => editorText(first)).toBe('编辑中内容仍在编辑')
 
+    // 提示出现之后，两页提供的仍然必须是版本 A：新版本只在等待，没有接管。
+    expect(await servedShell(first)).not.toContain(BUILD_B_MARKER)
+    expect(await servedShell(second)).not.toContain(BUILD_B_MARKER)
+    const waitingBefore = await first.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration()
+      return Boolean(registration?.waiting)
+    })
+    expect(waitingBefore).toBe(true)
+
     // 关闭全部应用页面但不销毁 context，重新打开：此时新版本生效。
     await first.close()
     await second.close()
 
     const reopened = await context.newPage()
-    await reopened.goto(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
+    const navigation = await reopened.goto(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
     await expect(reopened.getByRole('textbox', { name: '文档正文' })).toBeVisible()
     await expect.poll(() => editorText(reopened), { timeout: 20_000 }).toBe('编辑中内容仍在编辑')
 
-    // 版本提示在重开后消失，说明确实换到了新版本。
+    // 不只是「提示消失」：要证明现在服务的是版本 B，而且没有 worker 还在等待。
+    expect(navigation?.fromServiceWorker()).toBe(true)
+    await expect.poll(() => servedShell(reopened), { timeout: 20_000 }).toContain(BUILD_B_MARKER)
+
+    const state = await reopened.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration()
+      return {
+        controlled: Boolean(navigator.serviceWorker.controller),
+        hasWaiting: Boolean(registration?.waiting),
+        hasInstalling: Boolean(registration?.installing),
+      }
+    })
+    expect(state.controlled).toBe(true)
+    expect(state.hasWaiting).toBe(false)
+    expect(state.hasInstalling).toBe(false)
+
     await expect(reopened.getByText(/新版本已准备好/)).toHaveCount(0)
     await reopened.close()
   })

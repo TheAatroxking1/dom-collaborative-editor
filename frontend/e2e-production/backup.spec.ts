@@ -2,7 +2,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Browser, BrowserContext, Page } from '@playwright/test'
+import * as Y from 'yjs'
 
+import { serializeBackup } from '../src/documents/backup'
 import {
   ALTERNATE_ORIGIN,
   editorText,
@@ -71,6 +73,100 @@ function writeRawBackup(name: string, content: string): string {
   const target = join(directory, name)
   writeFileSync(target, content, 'utf8')
   return target
+}
+
+/**
+ * 造一个指定正文的备份文件。
+ *
+ * `padding` 用尾随空格把 JSON 撑大——尾随空白是合法 JSON，因此文件依然能通过
+ * 校验，但读取与解析会明显变慢，用来制造「先选的文件读得慢」这个时序。
+ */
+function writeBackupFile(
+  name: string,
+  documentId: string,
+  text: string,
+  padding = 0,
+): string {
+  const doc = new Y.Doc()
+  const paragraph = new Y.XmlElement('paragraph')
+  doc.getXmlFragment('body').push([paragraph])
+  const node = new Y.XmlText()
+  paragraph.push([node])
+  node.insert(0, text)
+
+  const json = serializeBackup(documentId, doc, PRODUCTION_ORIGIN)
+  doc.destroy()
+
+  const directory = mkdtempSync(join(tmpdir(), 'collab-race-'))
+  const target = join(directory, name)
+  writeFileSync(target, padding > 0 ? json + ' '.repeat(padding) : json, 'utf8')
+  return target
+}
+
+function readText(path: string): string {
+  return readFileSync(path, 'utf8')
+}
+
+/**
+ * 让「大文件的读取更慢」这件事真的发生。
+ *
+ * 页面内构造的 File 背后是内存里的字符串，大小并不带来 I/O 差异；而现实里大文件
+ * 从磁盘读取明显更慢，这正是竞态的成因。这里给 File.prototype.text 加一个与体积
+ * 相关的延时来还原那个条件——被测试的组件代码一行都没有改动。
+ */
+async function slowDownLargeFileReads(context: BrowserContext): Promise<void> {
+  await context.addInitScript(() => {
+    const original = File.prototype.text
+    File.prototype.text = function patched(this: File): Promise<string> {
+      const delay = this.size > 1_000_000 ? 300 : 0
+      return new Promise<string>((resolve, reject) => {
+        setTimeout(() => {
+          original.call(this).then(resolve, reject)
+        }, delay)
+      })
+    }
+  })
+}
+
+/**
+ * 在一个页面内同步派发两次文件选择，制造真实的交错。
+ *
+ * 为什么不用 `setInputFiles` 连续设置：那两次之间隔着一次 CDP 往返（几十毫秒），
+ * 足够第一次读取完成，竞态窗口根本不会出现——测试会假通过。
+ *
+ * 只用浏览器自身的 File / DataTransfer / change 事件，不替换被测代码的任何部分。
+ * 第二个名字为空字符串表示清空选择。
+ */
+async function dispatchTwoFileSelections(
+  page: Page,
+  firstText: string,
+  secondText: string,
+  names: { firstName: string; secondName: string },
+): Promise<void> {
+  await page.evaluate(
+    ({ first, second, firstName, secondName }) => {
+      const input = document.querySelector<HTMLInputElement>('.backup-file-input')
+      if (input === null) throw new Error('找不到文件选择输入框')
+
+      const choose = (content: string, name: string): void => {
+        const transfer = new DataTransfer()
+        if (name.length > 0) {
+          transfer.items.add(new File([content], name, { type: 'application/json' }))
+        }
+        input.files = transfer.files
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+
+      choose(first, firstName)
+      choose(second, secondName)
+    },
+    {
+      first: firstText,
+      second: secondText,
+      firstName: names.firstName,
+      secondName: names.secondName,
+    },
+  )
 }
 
 type Pages = { contexts: BrowserContext[]; pages: Page[] }
@@ -265,7 +361,7 @@ test.describe('换地址迁移', () => {
       const backupPath = await exportBackup(page)
 
       // 让服务端不再认识这份文档（只动测试自己的临时数据）。
-      server.removeDocumentFromDirectory(documentId)
+      await server.removeDocumentFromDirectory(documentId)
 
       await chooseBackup(page, backupPath)
       await merge(page)
@@ -320,7 +416,7 @@ test.describe('换地址迁移', () => {
       await chooseBackup(page, backupPath)
 
       // 把校验请求挂住，期间切到另一个文档。
-      let release: (() => void) | null = null
+      let release!: () => void
       const held = new Promise<void>((resolve) => {
         release = resolve
       })
@@ -341,7 +437,7 @@ test.describe('换地址迁移', () => {
       await page.keyboard.insertText('第二份文档的正文')
       await expect.poll(() => editorText(page)).toBe('第二份文档的正文')
 
-      release?.()
+      release()
       // 切到别的文档后，面板会同时提示「备份属于另一个文档」和这次校验被放弃，
       // 这里只断言后者确实出现。
       await expect(
@@ -353,6 +449,66 @@ test.describe('换地址迁移', () => {
       expect(await paragraphCount(page)).toBe(1)
     } finally {
       await closeAll(opened)
+    }
+  })
+
+  test('连续换文件时，先选的那份不会覆盖后选的那份', async ({ browser, server }) => {
+    const documentId = await server.createDocument()
+    const context = await browser.newContext({ serviceWorkers: 'allow' })
+    await slowDownLargeFileReads(context)
+    const page = await context.newPage()
+    await openAt(page, PRODUCTION_ORIGIN, documentId)
+
+    try {
+      // 甲文件接近上限，读取明显更慢；乙文件很小。
+      const slowPath = writeBackupFile('慢.json', documentId, '这是甲备份', 7_500_000)
+      const fastPath = writeBackupFile('快.json', documentId, '这是乙备份')
+
+      await expect(page.getByRole('heading', { name: '备份与迁移' })).toBeVisible()
+
+      // 用页面内同步派发两次 change，制造真实的交错：
+      // 通过 setInputFiles 依次设置会因为 CDP 往返太慢而永远错开，测不到竞态。
+      await dispatchTwoFileSelections(page, await readText(slowPath), await readText(fastPath), {
+        firstName: '慢.json',
+        secondName: '快.json',
+      })
+
+      // 最终必须停在乙：预览是乙的正文，文件名也是乙。
+      await expect.poll(() => previewText(page), { timeout: 20_000 }).toBe('这是乙备份')
+      await expect(page.locator('.backup-panel')).toContainText('快.json')
+
+      // 再等一段时间，确认甲那次迟到的结果不会把预览改回去。
+      await page.waitForTimeout(2500)
+      expect(await previewText(page)).toBe('这是乙备份')
+      await expect(page.locator('.backup-panel')).toContainText('快.json')
+      await expect(page.locator('.backup-panel')).not.toContainText('这是甲备份')
+    } finally {
+      await context.close()
+    }
+  })
+
+  test('清除选择后，仍在读取的文件结果不会回来', async ({ browser, server }) => {
+    const documentId = await server.createDocument()
+    const context = await browser.newContext({ serviceWorkers: 'allow' })
+    await slowDownLargeFileReads(context)
+    const page = await context.newPage()
+    await openAt(page, PRODUCTION_ORIGIN, documentId)
+
+    try {
+      const slowPath = writeBackupFile('慢.json', documentId, '不该出现的正文', 7_500_000)
+      await expect(page.getByRole('heading', { name: '备份与迁移' })).toBeVisible()
+
+      await dispatchTwoFileSelections(page, await readText(slowPath), '', {
+        firstName: '慢.json',
+        secondName: '',
+      })
+
+      // 旧结果不得把预览或文件名带回来。
+      await page.waitForTimeout(2500)
+      await expect(page.getByRole('textbox', { name: '备份正文预览' })).toHaveCount(0)
+      await expect(page.locator('.backup-panel')).not.toContainText('慢.json')
+    } finally {
+      await context.close()
     }
   })
 

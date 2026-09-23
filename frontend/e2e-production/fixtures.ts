@@ -11,7 +11,6 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test'
 
@@ -38,6 +37,13 @@ export const PRODUCTION_ORIGIN = `http://127.0.0.1:${PRODUCTION_PORT}`
  * 因此可以用一个服务进程验证「换地址后本地内容不会自动跟过去」。
  */
 export const ALTERNATE_ORIGIN = `http://localhost:${PRODUCTION_PORT}`
+
+/**
+ * 版本 B 的标记，写在它的 index.html 里。
+ *
+ * 部署与断言共用这一个常量：测试要能证明「现在生效的是 B」，而不是只看提示消失。
+ */
+export const BUILD_B_MARKER = '<!-- build-b -->'
 
 const READY_POLL_INTERVAL_MS = 100
 const READY_TIMEOUT_MS = 30_000
@@ -162,15 +168,34 @@ export class ProductionServer {
   /**
    * 从文档目录里移除一条记录，用来制造「客户端有备份、服务端没有这份文档」。
    *
-   * 只作用于测试自己的临时数据目录。
+   * 只作用于测试自己的临时数据目录。这里借道 Python 的 sqlite3 而不是 Node 的
+   * node:sqlite：后者要求 Node 22.5+（22.12 还需实验开关），而本项目文档允许
+   * Node 20.19+；Python 本来就是硬依赖，不必因为它抬高 Node 版本要求。
    */
-  removeDocumentFromDirectory(documentId: string): void {
-    const database = new DatabaseSync(join(this.dataDirectory, 'documents.sqlite3'))
-    try {
-      database.prepare('DELETE FROM documents WHERE id = ?').run(documentId)
-    } finally {
-      database.close()
-    }
+  async removeDocumentFromDirectory(documentId: string): Promise<void> {
+    const script = `
+import sqlite3, sys
+
+connection = sqlite3.connect(sys.argv[1])
+try:
+    connection.execute("DELETE FROM documents WHERE id = ?", (sys.argv[2],))
+    connection.commit()
+finally:
+    connection.close()
+`
+    await new Promise<void>((done, fail) => {
+      const child = spawn(
+        pythonExecutable,
+        ['-c', script, join(this.dataDirectory, 'documents.sqlite3'), documentId],
+        { cwd: backendDirectory, env: { ...process.env, PYTHONUTF8: '1' } },
+      )
+      let err = ''
+      child.stderr.on('data', (chunk) => (err += chunk))
+      child.once('error', fail)
+      child.once('exit', (code) =>
+        code === 0 ? done() : fail(new Error(err || `删除文档目录记录失败：${code}`)),
+      )
+    })
   }
 
   /**
@@ -189,11 +214,10 @@ export class ProductionServer {
     // 版本 A 的产物先备份，用来生成 B 的清单后恢复：B 只改 index.html 的内容，
     // 资源文件名保持不变，因此旧页面的资源请求仍然可解析。
     const originalIndex = readFileSync(indexPath, 'utf8')
-    writeFileSync(indexPath, `${originalIndex}\n<!-- build-b -->`, 'utf8')
+    writeFileSync(indexPath, `${originalIndex}\n${BUILD_B_MARKER}`, 'utf8')
 
-    const { generateSW } = (await import('workbox-build')) as {
-      generateSW: (options: Record<string, unknown>) => Promise<{ warnings?: string[] }>
-    }
+    const { generateSW } = await import('workbox-build')
+    // 用 workbox-build 自己的类型，不绕过检查：选项写错应该在类型阶段就暴露。
     const result = await generateSW({
       swDest: join(this.staticDirectory, 'sw.js'),
       globDirectory: this.staticDirectory,
@@ -204,10 +228,8 @@ export class ProductionServer {
       cleanupOutdatedCaches: true,
       skipWaiting: false,
       clientsClaim: true,
-      // 生成到临时目录再自行放回，避免 workbox 覆盖我们已保留的资源。
-      modifyURLPrefix: {},
     })
-    if (result.warnings?.length) {
+    if (result.warnings.length > 0) {
       throw new Error(`版本 B 的预缓存清单有警告：${result.warnings.join('；')}`)
     }
   }
@@ -232,6 +254,18 @@ export async function waitForServiceWorkerControl(page: Page): Promise<void> {
       timeout: 20_000,
     })
     .toBe(true)
+}
+
+/**
+ * 让页面看起来像 HTTP 局域网：安全上下文为 false。
+ *
+ * 127.0.0.1 在浏览器里算安全上下文，所以不这样做就测不到局域网那套降级。
+ * 必须在页面导航之前调用。
+ */
+export async function simulateInsecureContext(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
+  })
 }
 
 export async function editorText(page: Page): Promise<string> {

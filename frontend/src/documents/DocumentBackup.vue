@@ -47,6 +47,15 @@ const matchesCurrent = computed(
 
 const canMerge = computed(() => matchesCurrent.value && canUseCurrentDocument.value)
 
+/**
+ * 选择代次：每次换文件或清除选择都递增。
+ *
+ * 读取文件是异步的，大文件会慢。先选 A 再选 B 时，如果 A 的读取更慢，它的结果会
+ * 覆盖 B 的预览，而文件名仍显示 B——用户以为在合并 B，实际合并的是 A。所以每个
+ * 异步步骤恢复后都要核对代次。
+ */
+let selectionGeneration = 0
+
 function clearFeedback(): void {
   message.value = null
   problem.value = null
@@ -61,6 +70,8 @@ watch(
 )
 
 function resetSelection(): void {
+  // 作废所有还在读取中的请求。
+  selectionGeneration += 1
   selected.value = null
   selectedFileName.value = null
   if (fileInput.value) fileInput.value.value = ''
@@ -70,17 +81,30 @@ async function onFileChosen(event: Event): Promise<void> {
   clearFeedback()
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file) return
+  if (!file) {
+    // 选择被清空：面板也要回到未选择状态，否则会出现「输入框里没有文件，
+    // 却还显示着上一个文件的预览与文件名」这种对不上的界面。
+    resetSelection()
+    return
+  }
 
+  const generation = (selectionGeneration += 1)
   selectedFileName.value = file.name
+  // 换文件后旧预览先清掉，避免在新文件读取期间还显示上一个文件的正文。
+  selected.value = null
+
   try {
     // 先看文件大小再看内容，避免为一个超大文件分配内存。
     if (file.size > 8 * 1024 * 1024) {
       throw new Error('备份文件过大，超过上限 8 MiB。')
     }
     const text = await file.text()
-    selected.value = parseBackup(text)
+    const parsed = parseBackup(text)
+    // 期间换过文件或清除过选择：这次结果已经过期，直接丢弃。
+    if (generation !== selectionGeneration) return
+    selected.value = parsed
   } catch (error) {
+    if (generation !== selectionGeneration) return
     resetSelection()
     problem.value = error instanceof Error ? error.message : String(error)
   }
@@ -188,6 +212,8 @@ function openOriginal(): void {
 }
 
 onBeforeUnmount(() => {
+  // 卸载后到达的读取结果不得再改动状态。
+  selectionGeneration += 1
   clearFeedback()
 })
 </script>

@@ -281,6 +281,15 @@ function retry(): void {
 
       <p class="connection-status" role="status" aria-live="polite">{{ connectionText }}</p>
 
+      <!--
+        当前地址不支持离线页面缓存时要在这里也说一次：直接打开协作链接的人不会
+        经过首页，只在首页提示等于对这些人没有提示。开发模式的构建版提示留在首页，
+        不在这里重复。
+      -->
+      <p v-if="offlineState.addressLimitsOfflineCache.value" class="info-text">
+        {{ offlineState.offlineUnavailableReason.value }}
+      </p>
+
       <p v-if="statusText.length > 0" class="error-text" role="alert">{{ statusText }}</p>
       <p v-if="statusText.length > 0" class="document-actions">
         <button type="button" class="toolbar-button" @click="retry">重试</button>

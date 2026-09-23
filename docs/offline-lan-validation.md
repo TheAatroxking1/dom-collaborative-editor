@@ -15,10 +15,10 @@
 | --- | ---: | --- | --- |
 | 后端单元与集成 | 53 | 通过 | `python -m pytest -c backend/pyproject.toml backend/tests -q` |
 | 前端单元 | 42 | 通过 | `npm --prefix frontend test` |
-| 前端类型检查 | — | 通过 | `npm --prefix frontend run typecheck` |
+| 前端类型检查（含生产套件） | — | 通过 | `npm --prefix frontend run typecheck` |
 | 前端构建 | — | 通过 | `npm --prefix frontend run build` |
 | 端到端（开发模式） | 41 | 通过 | `npm --prefix frontend run test:e2e` |
-| 端到端（生产构建版） | 21 | 通过 | `npm --prefix frontend run test:e2e:production` |
+| 端到端（生产构建版） | 25 | 通过 | `npm --prefix frontend run test:e2e:production` |
 
 生产套件用的是真实构建产物与真实 Python 进程，**没有 Vite dev，也不通过拦截 WebSocket
 冒充离线**。
@@ -36,10 +36,12 @@
 | CacheStorage 中没有 API 与 WebSocket 响应 | `offline.spec.ts` › 缓存里没有 API 与 WebSocket 响应 | 通过 |
 | 全新上下文离线首次访问不声称可用 | `offline.spec.ts` › 全新上下文从未访问时… | 通过 |
 | 两个编辑页遇到新版本都不自动刷新 | `offline.spec.ts` › 两个编辑页遇到新版本… | 通过 |
-| 关闭全部页面后重新打开，新版本生效 | 同上 | 通过 |
+| 关闭全部页面后重新打开，新版本生效 | 同上（断言服务的是版本 B 的构建标记、没有 worker 仍在等待） | 通过 |
 | 重开后正文来自本地缓存 | `offline.spec.ts` › 重开后正文来自本地缓存… | 通过 |
 | 开发模式不注册 Service Worker | `e2e/navigation.spec.ts` › 开发模式不注册 Service Worker | 通过 |
 | 开发模式说明缓存只在构建版启用 | `e2e/navigation.spec.ts` › 开发模式说明… | 通过 |
+| 生产构建版不显示「只在构建版启用」的提示 | `offline.spec.ts` › 生产构建版下不显示… | 通过 |
+| 当前地址不支持离线缓存时，文档页也说明 | `offline.spec.ts` › 地址不支持离线缓存时… | 通过 |
 
 判定「页面来自 SW」用的是 `response.fromServiceWorker()`，不是仅看页面是否能渲染。
 
@@ -61,6 +63,8 @@
 | 校验超时明确失败、不写入正文 | `backup.spec.ts` › 合并前的在线校验超时… | 通过 |
 | 校验期间切换文档时不写入新文档 | `backup.spec.ts` › 校验期间切换文档时… | 通过 |
 | 离线仍可导出与预览 | `backup.spec.ts` › 离线时仍可导出与预览… | 通过 |
+| 连续换文件时先选的那份不覆盖后选的那份 | `backup.spec.ts` › 连续换文件时… | 通过 |
+| 清除选择后仍在读取的结果不回来 | `backup.spec.ts` › 清除选择后… | 通过 |
 | 编解码层单测（含删除迁移、emoji、结构校验） | `frontend/tests/backup.test.ts`（15 项） | 通过 |
 
 ### 边界三：复制在 HTTP 局域网和拒绝授权时可用

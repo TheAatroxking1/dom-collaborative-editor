@@ -14,6 +14,8 @@ const pageCacheReady = ref(false)
 const updateAvailable = ref(false)
 /** 无法启用离线页面缓存时的具体原因；为空表示没有发现问题。 */
 const offlineUnavailableReason = ref<string | null>(null)
+/** 限制来自当前访问地址（而非开发模式）：这才是用户需要知道的那种限制。 */
+const addressLimitsOfflineCache = ref(false)
 
 const NOT_BUILT = '离线页面缓存只在构建版启用；开发模式请忽略这一项。'
 const NOT_SECURE =
@@ -27,10 +29,17 @@ export const offlineState: {
   pageCacheReady: Readonly<Ref<boolean>>
   updateAvailable: Readonly<Ref<boolean>>
   offlineUnavailableReason: Readonly<Ref<string | null>>
+  addressLimitsOfflineCache: Readonly<Ref<boolean>>
 } = {
   pageCacheReady: readonly(pageCacheReady),
   updateAvailable: readonly(updateAvailable),
   offlineUnavailableReason: readonly(offlineUnavailableReason),
+  addressLimitsOfflineCache: readonly(addressLimitsOfflineCache),
+}
+
+function markUnavailableByAddress(reason: string): void {
+  offlineUnavailableReason.value = reason
+  addressLimitsOfflineCache.value = true
 }
 
 /** 在测试或特殊环境下标记为不可用。 */
@@ -63,11 +72,11 @@ export function registerOfflineShell(): void {
     return
   }
   if (!window.isSecureContext) {
-    offlineUnavailableReason.value = NOT_SECURE
+    markUnavailableByAddress(NOT_SECURE)
     return
   }
   if (!('serviceWorker' in navigator)) {
-    offlineUnavailableReason.value = NO_SERVICE_WORKER
+    markUnavailableByAddress(NO_SERVICE_WORKER)
     return
   }
 
