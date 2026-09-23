@@ -1,11 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
-import { test as base, expect, type Page } from '@playwright/test'
+import { test as base, expect, type BrowserContext, type Page } from '@playwright/test'
 
 const backendDirectory = resolve(fileURLToPath(new URL('../../backend', import.meta.url)))
 const pythonExecutable = join(backendDirectory, '.venv', 'Scripts', 'python.exe')
@@ -13,9 +11,9 @@ const pythonExecutable = join(backendDirectory, '.venv', 'Scripts', 'python.exe'
 export const BACKEND_PORT = Number(process.env.COLLAB_E2E_BACKEND_PORT ?? 8791)
 export const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`
 
-/** 就绪探测的轮询节奏与上限，避免用固定 sleep 猜启动时间。 */
 const READY_POLL_INTERVAL_MS = 100
 const READY_TIMEOUT_MS = 30_000
+const SHUTDOWN_TIMEOUT_MS = 20_000
 
 async function waitForHealth(origin: string, deadline: number): Promise<void> {
   for (;;) {
@@ -23,48 +21,54 @@ async function waitForHealth(origin: string, deadline: number): Promise<void> {
       const response = await fetch(`${origin}/api/health`)
       if (response.ok) return
     } catch {
-      // 进程还没开始监听，继续轮询。
+      // 还没开始监听，继续轮询。
     }
     if (Date.now() > deadline) throw new Error(`后端未在预期时间内就绪：${origin}`)
     await new Promise((done) => setTimeout(done, READY_POLL_INTERVAL_MS))
   }
 }
 
-/** 每个测试独立的后端进程，数据库位于自己的临时目录。 */
+/**
+ * 每个测试独立的后端进程，数据目录也是独立的。
+ *
+ * 通过 tests/uvicorn_launcher.py 启动：它允许从标准输入请求正常停止，
+ * 这样才验证得了 lifespan 的收尾流程。强制结束（崩溃）场景直接 kill 进程。
+ */
 export class BackendProcess {
-  readonly databaseDirectory: string
-  readonly databasePath: string
-  readonly controlToken = randomUUID()
+  readonly dataDirectory: string
   private child: ChildProcess | null = null
 
   private constructor(directory: string) {
-    this.databaseDirectory = directory
-    this.databasePath = join(directory, 'collab.db')
+    this.dataDirectory = directory
   }
 
   static async start(): Promise<BackendProcess> {
-    const directory = mkdtempSync(join(tmpdir(), 'collab-e2e-'))
-    const backend = new BackendProcess(directory)
+    const backend = new BackendProcess(mkdtempSync(join(tmpdir(), 'collab-e2e-')))
     await backend.spawn()
     return backend
   }
 
+  /** 文档目录数据库。 */
+  get directoryPath(): string {
+    return join(this.dataDirectory, 'documents.sqlite3')
+  }
+
+  /** 库的 CRDT 存储数据库。 */
+  get updatesPath(): string {
+    return join(this.dataDirectory, 'updates.sqlite3')
+  }
+
   private async spawn(): Promise<void> {
-    const child = spawn(
-      pythonExecutable,
-      ['-m', 'tests.e2e_server'],
-      {
-        cwd: backendDirectory,
-        env: {
-          ...process.env,
-          COLLAB_DB_PATH: this.databasePath,
-          COLLAB_PORT: String(BACKEND_PORT),
-          COLLAB_CONTROL_TOKEN: this.controlToken,
-          PYTHONUTF8: '1',
-        },
-        stdio: 'ignore',
+    const child = spawn(pythonExecutable, ['-m', 'tests.uvicorn_launcher'], {
+      cwd: backendDirectory,
+      env: {
+        ...process.env,
+        COLLAB_DATA_DIR: this.dataDirectory,
+        COLLAB_PORT: String(BACKEND_PORT),
+        PYTHONUTF8: '1',
       },
-    )
+      stdio: ['pipe', 'ignore', 'ignore'],
+    })
     this.child = child
     child.once('exit', () => {
       if (this.child === child) this.child = null
@@ -72,19 +76,34 @@ export class BackendProcess {
     await waitForHealth(BACKEND_ORIGIN, Date.now() + READY_TIMEOUT_MS)
   }
 
-  /** 终止进程而不是走应用清理流程：崩溃恢复必须靠持久化日志。 */
+  private async waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+    return new Promise((done) => {
+      if (child.exitCode !== null || child.signalCode !== null) return done(true)
+      const timer = setTimeout(() => done(false), timeoutMs)
+      child.once('exit', () => {
+        clearTimeout(timer)
+        done(true)
+      })
+    })
+  }
+
+  /** 请求正常停止并等待进程退出；返回 lifespan 是否走完了收尾流程。 */
+  async stopGracefully(): Promise<boolean> {
+    const child = this.child
+    if (child === null) return true
+    child.stdin?.write('stop\n')
+    const exited = await this.waitForExit(child, SHUTDOWN_TIMEOUT_MS)
+    if (exited) this.child = null
+    return exited
+  }
+
+  /** 强制终止：只用于「崩溃」场景，不走应用清理流程。 */
   async kill(): Promise<void> {
     const child = this.child
     this.child = null
     if (child === null) return
     child.kill()
-    await new Promise<void>((done) => {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        done()
-        return
-      }
-      child.once('exit', () => done())
-    })
+    await this.waitForExit(child, 10_000)
   }
 
   async restart(): Promise<void> {
@@ -96,120 +115,75 @@ export class BackendProcess {
     await this.kill()
     // 只清理自己创建、且确实位于临时根目录下的目录。
     const root = resolve(tmpdir())
-    const target = resolve(this.databaseDirectory)
+    const target = resolve(this.dataDirectory)
     if (!target.startsWith(root) || !existsSync(target)) return
     try {
       rmSync(target, { recursive: true, force: true })
     } catch {
-      // 刚被终止的进程在 Windows 上可能还持有数据库文件句柄，清理失败不影响
-      // 测试结论；临时目录由操作系统回收，不该因此判定用例失败。
+      // 刚被终止的进程可能还持有数据库文件句柄；临时目录由系统回收，
+      // 清理失败不影响测试结论。
     }
   }
 
-  get gates(): GateClient {
-    return new GateClient(BACKEND_ORIGIN, this.controlToken)
+  /**
+   * 破坏 CRDT 存储：把数据库文件的位置占成一个目录，store 无法打开，写入必然失败。
+   *
+   * 这是真实的存储故障，不需要往生产代码里插故障开关。
+   */
+  breakStorage(): void {
+    const path = this.updatesPath
+    if (existsSync(path)) rmSync(path, { recursive: true, force: true })
+    for (const suffix of ['-wal', '-shm']) {
+      const sidecar = `${path}${suffix}`
+      if (existsSync(sidecar)) rmSync(sidecar, { force: true })
+    }
+    mkdirSync(path, { recursive: true })
   }
 
-  get origin(): string {
-    return BACKEND_ORIGIN
+  /** 复原存储：移除占位目录，让 store 在下次启动时重建数据库文件。 */
+  restoreStorage(): void {
+    const path = this.updatesPath
+    if (existsSync(path)) rmSync(path, { recursive: true, force: true })
   }
 
-  createDocument(): Promise<string> {
-    return createDocument(BACKEND_ORIGIN)
-  }
-}
+  /** 用独立进程里的官方 store 读回正文，作为「确实写了」的证据。 */
+  async readStoredText(documentId: string): Promise<string> {
+    const script = `
+import asyncio, sys
+from pathlib import Path
+from app.collaboration import read_document_state
+from pycrdt import XmlFragment
 
-export type GateMatch = {
-  documentId?: string
-  txId?: string
-  syncId?: string
-}
+async def main():
+    document = await read_document_state(Path(sys.argv[1]), sys.argv[2])
+    fragment = document.get("body", type=XmlFragment)
+    print("".join(str(c) for c in fragment.children[0].children))
 
-export type GatePoint = 'after_commit' | 'before_sync_send' | 'before_ack_send'
-
-/** 控制接口客户端：让真实提交与发送路径在指定位置暂停。 */
-export class GateClient {
-  constructor(
-    private readonly origin: string,
-    private readonly token: string,
-  ) {}
-
-  private async call(path: string, body: unknown): Promise<unknown> {
-    const response = await fetch(`${this.origin}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-control-token': this.token },
-      body: JSON.stringify(body),
+asyncio.run(main())
+`
+    const result = await new Promise<string>((done, fail) => {
+      const reader = spawn(
+        pythonExecutable,
+        ['-c', script, this.updatesPath, documentId],
+        { cwd: backendDirectory, env: { ...process.env, PYTHONUTF8: '1' } },
+      )
+      let out = ''
+      let err = ''
+      reader.stdout.on('data', (chunk) => (out += chunk))
+      reader.stderr.on('data', (chunk) => (err += chunk))
+      reader.once('error', fail)
+      reader.once('exit', (code) =>
+        code === 0 ? done(out.trim()) : fail(new Error(err || `读取失败：${code}`)),
+      )
     })
-    if (!response.ok) {
-      throw new Error(`控制接口失败 ${path}：HTTP ${response.status} ${await response.text()}`)
-    }
-    return response.json()
+    return result
   }
 
-  async arm(point: GatePoint, match: GateMatch = {}): Promise<string> {
-    const result = (await this.call('/control/gates', { point, ...match })) as {
-      gateId: string
-    }
-    return result.gateId
+  async createDocument(): Promise<string> {
+    const response = await fetch(`${BACKEND_ORIGIN}/api/documents`, { method: 'POST' })
+    if (response.status !== 201) throw new Error(`创建文档失败：HTTP ${response.status}`)
+    return ((await response.json()) as { documentId: string }).documentId
   }
-
-  async wait(gateId: string): Promise<void> {
-    await this.call(`/control/gates/${gateId}/wait`, {})
-  }
-
-  async release(gateId: string): Promise<void> {
-    await this.call(`/control/gates/${gateId}/release`, {})
-  }
-
-  async releaseAll(): Promise<void> {
-    await this.call('/control/gates/release-all', {})
-  }
-}
-
-export async function createDocument(origin: string): Promise<string> {
-  const response = await fetch(`${origin}/api/documents`, { method: 'POST' })
-  if (!response.ok) throw new Error(`创建文档失败：HTTP ${response.status}`)
-  const payload = (await response.json()) as { documentId: string }
-  return payload.documentId
-}
-
-/** 用独立连接直接读数据库，验证的是真正落盘的内容而不是服务端内存状态。 */
-export function readSqlite<T>(databasePath: string, query: string, params: unknown[]): T[] {
-  const database = new DatabaseSync(databasePath, { readOnly: true })
-  try {
-    return database.prepare(query).all(...(params as never[])) as T[]
-  } finally {
-    database.close()
-  }
-}
-
-export function countUpdates(databasePath: string, documentId: string, txId?: string): number {
-  const rows = readSqlite<{ total: number }>(
-    databasePath,
-    txId === undefined
-      ? 'SELECT COUNT(*) AS total FROM updates WHERE document_id = ?'
-      : 'SELECT COUNT(*) AS total FROM updates WHERE document_id = ? AND tx_id = ?',
-    txId === undefined ? [documentId] : [documentId, txId],
-  )
-  return rows[0]?.total ?? 0
-}
-
-export type UpdateRow = { tx_id: string; seq: number; payload_sha256: string }
-
-export function readUpdates(databasePath: string, documentId: string): UpdateRow[] {
-  return readSqlite<UpdateRow>(
-    databasePath,
-    'SELECT tx_id, seq, payload_sha256 FROM updates WHERE document_id = ? ORDER BY seq ASC',
-    [documentId],
-  )
-}
-
-export function documentIdFromUrl(page: Page): string {
-  const url = page.url()
-  const marker = '#/documents/'
-  const index = url.indexOf(marker)
-  if (index < 0) throw new Error(`地址中不含文档标识：${url}`)
-  return url.slice(index + marker.length)
 }
 
 export async function editorText(page: Page): Promise<string> {
@@ -242,8 +216,8 @@ export async function focusEditor(page: Page): Promise<void> {
 /**
  * 等待浏览器派发 selectionchange、编辑内核跟上 DOM 选区。
  *
- * 键盘扩展选区后，DOM 选区会立刻变化，但编辑内核要等 selectionchange 才更新它
- * 自己的 selection。这中间发出的删除键会按旧选区执行，表现为「按了没反应」。
+ * 键盘扩展选区后 DOM 选区会立刻变化，但编辑内核要等 selectionchange 才更新它
+ * 自己的 selection。这中间发出的删除键会按旧选区执行。
  */
 export async function settleSelection(page: Page): Promise<void> {
   await page.evaluate(
@@ -254,11 +228,7 @@ export async function settleSelection(page: Page): Promise<void> {
   )
 }
 
-/**
- * 用显式选区选中当前段落的开头若干字符。
- *
- * 先确认选区真的建立起来了再返回，避免后续删除落在一个尚未扩展的选区上。
- */
+/** 用显式选区选中当前段落的开头若干字符。 */
 export async function selectLeadingCharacters(page: Page, count: number): Promise<void> {
   await focusEditor(page)
   await page.keyboard.press('Home')
@@ -276,13 +246,17 @@ export async function openDocumentAt(page: Page, documentId: string): Promise<vo
   await expect(page.getByRole('textbox', { name: '文档正文' })).toBeVisible()
 }
 
-export async function saveStatus(page: Page): Promise<string> {
+export function connectionStatus(page: Page): Promise<string> {
   return page.getByRole('status').innerText()
+}
+
+export async function waitForConnected(page: Page): Promise<void> {
+  await expect.poll(() => connectionStatus(page), { timeout: 20_000 }).toBe('已连接')
 }
 
 type Fixtures = {
   backend: BackendProcess
-  firstContext: import('@playwright/test').BrowserContext
+  firstContext: BrowserContext
   first: Page
   second: Page
   /** 与 first 同源同上下文的第二个标签页，共享本地存储。 */
@@ -290,10 +264,6 @@ type Fixtures = {
   openDocument: (page: Page) => Promise<string>
 }
 
-/**
- * 后端进程与浏览器上下文都由夹具管理：每个测试拿到独立数据库和独立进程，
- * 因此故障注入不会泄漏到其他测试，也不会被上一轮的残留状态掩盖。
- */
 export const test = base.extend<Fixtures>({
   backend: async ({}, use) => {
     const backend = await BackendProcess.start()

@@ -193,7 +193,7 @@ afterAll(async () => {
     const child = server
     server = null
     child.kill()
-    await new Promise((done) => {
+    await new Promise<void>((done) => {
       if (child.exitCode !== null || child.signalCode !== null) return done()
       child.once('exit', () => done())
     })

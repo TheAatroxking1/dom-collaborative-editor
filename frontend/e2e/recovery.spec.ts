@@ -1,357 +1,245 @@
-import { DatabaseSync } from 'node:sqlite'
 import type { Page } from '@playwright/test'
 
 import {
-  countUpdates,
   editorText as textOf,
   expect,
   focusEditor,
   openDocumentAt,
-  readUpdates,
-  saveStatus,
   selectLeadingCharacters,
-  settleSelection,
   test,
+  waitForConnected,
 } from './fixtures'
 
-/** 直接改数据库文件的写锁，用来制造真实的提交失败。 */
-class SqliteWriteLock {
-  private database: DatabaseSync | null = null
+type WebSocketControl = {
+  block(): void
+  allow(): void
+}
 
-  constructor(private readonly databasePath: string) {}
-
-  open(): void {
-    this.database = new DatabaseSync(this.databasePath)
-    this.database.exec('PRAGMA busy_timeout = 0')
-    this.database.exec('BEGIN IMMEDIATE')
-  }
-
-  close(): void {
-    if (this.database === null) return
-    try {
-      this.database.exec('ROLLBACK')
-    } catch {
-      // 锁已经被释放时无需处理。
+/**
+ * 只阻断 WebSocket，保留 HTTP：页面资源仍能加载，因此可以验证离线刷新。
+ *
+ * Playwright 的 unrouteAll 不覆盖 WebSocket 路由，所以这里装一个常驻处理器，
+ * 用开关控制是否放行；放行时手动把两个方向的消息接起来。
+ */
+async function controlWebSocket(page: Page): Promise<WebSocketControl> {
+  const state = { blocked: true }
+  await page.routeWebSocket(/\/ws\/documents\//, (socket) => {
+    if (state.blocked) {
+      socket.close()
+      return
     }
-    this.database.close()
-    this.database = null
+    const server = socket.connectToServer()
+    socket.onMessage((message) => server.send(message))
+    server.onMessage((message) => socket.send(message))
+  })
+  return {
+    block: () => {
+      state.blocked = true
+    },
+    allow: () => {
+      state.blocked = false
+    },
   }
 }
 
-async function typeText(page: Page, text: string): Promise<void> {
-  await focusEditor(page)
-  await page.keyboard.insertText(text)
+/** 等到服务端确实有这段正文，作为「已经传出去了」的依据。 */
+async function waitUntilStored(
+  backend: { readStoredText: (id: string) => Promise<string> },
+  documentId: string,
+  expected: string,
+): Promise<void> {
+  await expect.poll(() => backend.readStoredText(documentId), { timeout: 20_000 }).toBe(expected)
 }
 
-/** 等待界面稳定显示服务端已保存。 */
-async function waitForServerSaved(page: Page, timeout = 30_000): Promise<void> {
-  await expect.poll(() => saveStatus(page), { timeout }).toBe('服务端已保存')
-}
-
-test.describe('ACK 丢失与崩溃窗口', () => {
-  test('ACK 丢失后按原 txId 重发，不重复记录也不重复插字', async ({
-    backend,
-    first,
-    openDocument,
-  }) => {
-    const documentId = await openDocument(first)
-    await typeText(first, '第一次输入')
-    await waitForServerSaved(first)
-
-    // 让这次提交的确认停在发送路径上：服务端已经落盘，客户端还没收到 ACK。
-    const gateId = await backend.gates.arm('before_ack_send', { documentId })
-    await typeText(first, '第二次输入')
-    await backend.gates.wait(gateId)
-
-    // 关键窗口：确认还没送达，但记录已经真正提交。
-    const committed = readUpdates(backend.databasePath, documentId)
-    const committedTxId = committed[committed.length - 1]?.tx_id as string
-    expect(countUpdates(backend.databasePath, documentId, committedTxId)).toBe(1)
-
-    // ACK 永远不会送达：直接终止进程，客户端只能靠重连与重发恢复。
-    await backend.kill()
-    await backend.restart()
-    await waitForServerSaved(first)
-
-    // 重连会重新握手并产生新的补同步事务，但同一 txId 永远只有一条记录。
-    expect(countUpdates(backend.databasePath, documentId, committedTxId)).toBe(1)
-    const replayed = readUpdates(backend.databasePath, documentId).filter(
-      (row) => row.tx_id === committedTxId,
-    )
-    expect(replayed).toHaveLength(1)
-    expect(await textOf(first)).toBe('第一次输入第二次输入')
-  })
-
-  test('提交后、广播前崩溃，重启后新客户端能读到已落盘内容', async ({
+test.describe('断线编辑与恢复', () => {
+  test('两端断线期间各自编辑，重连后双方新增都保留', async ({
     backend,
     first,
     second,
     openDocument,
   }) => {
     const documentId = await openDocument(first)
-    await typeText(first, '崩溃前')
-    await waitForServerSaved(first)
-
-    // after_commit 在房间锁内：暂停在这里就等于「已落盘但还没广播」的崩溃窗口。
-    const gateId = await backend.gates.arm('after_commit', { documentId })
-    await typeText(first, '已提交未广播')
-    await backend.gates.wait(gateId)
-
-    // 此刻内容已经在 SQLite 里，但任何客户端都还没看到它。
-    const committed = readUpdates(backend.databasePath, documentId)
-    const committedTxId = committed[committed.length - 1]?.tx_id as string
-    expect(countUpdates(backend.databasePath, documentId, committedTxId)).toBe(1)
-
-    await backend.kill()
-    await backend.restart()
-
-    // 全新浏览器直接读文档：恢复不依赖原浏览器是否补传。
     await openDocumentAt(second, documentId)
-    await expect.poll(() => textOf(second)).toBe('崩溃前已提交未广播')
 
-    // 原客户端重连后重试同一事务，仍然只有一条记录，文字也没有重复。
-    await waitForServerSaved(first)
-    expect(countUpdates(backend.databasePath, documentId, committedTxId)).toBe(1)
-    await expect.poll(() => textOf(first)).toBe('崩溃前已提交未广播')
-    await expect.poll(() => textOf(second)).toBe('崩溃前已提交未广播')
-  })
-})
+    await focusEditor(first)
+    await first.keyboard.insertText('共同起点')
+    await expect.poll(() => textOf(second)).toBe('共同起点')
+    await waitUntilStored(backend, documentId, '共同起点')
 
-test.describe('握手与断线', () => {
-  test('握手期间另一端持续提交，恢复后不丢更新', async ({
-    backend,
-    first,
-    second,
-    openDocument,
-  }) => {
-    const documentId = await openDocument(first)
-    await typeText(first, '起始内容')
-    await waitForServerSaved(first)
+    // 两端同时离线。
+    await backend.kill()
 
-    // 暂停第二端的同步响应；此时第一端继续提交，第二端尚未登记完初始差量。
-    const gateId = await backend.gates.arm('before_sync_send', { documentId })
-    const navigating = second.goto(`/#/documents/${documentId}`)
-    await backend.gates.wait(gateId)
+    await focusEditor(first)
+    await first.keyboard.press('End')
+    await first.keyboard.insertText('甲的补充')
+    await focusEditor(second)
+    await second.keyboard.press('Home')
+    await second.keyboard.insertText('乙的补充')
 
-    for (const chunk of ['甲', '乙', '丙']) {
-      await focusEditor(first)
-      await first.keyboard.press('End')
-      await first.keyboard.insertText(chunk)
-      await waitForServerSaved(first)
-    }
+    // 离线期间各自都能看到自己的修改。
+    expect(await textOf(first)).toContain('甲的补充')
+    expect(await textOf(second)).toContain('乙的补充')
 
-    await backend.gates.release(gateId)
-    await navigating
+    await backend.restart()
+    await waitForConnected(first)
+    await waitForConnected(second)
 
-    // 第二端既拿到同步差量，也拿到握手期间的广播，内容必须完整。
-    await expect.poll(() => textOf(second)).toBe('起始内容甲乙丙')
-    await expect.poll(() => textOf(first)).toBe('起始内容甲乙丙')
+    await expect.poll(async () => (await textOf(first)) === (await textOf(second))).toBe(true)
+    const merged = await textOf(first)
+    expect(merged).toContain('甲的补充')
+    expect(merged).toContain('乙的补充')
+    expect(merged).toContain('共同起点')
   })
 
-  test('离线删除在重连后传播，不依赖插入来掩盖', async ({ backend, first, second, openDocument }) => {
+  test('断线期间只做删除，重连后删除仍然传播', async ({ backend, first, second, openDocument }) => {
     const documentId = await openDocument(first)
-    await typeText(first, '0123456789')
-    await waitForServerSaved(first)
+    await openDocumentAt(second, documentId)
+
+    await focusEditor(first)
+    await first.keyboard.insertText('0123456789')
+    await expect.poll(() => textOf(second)).toBe('0123456789')
+    await waitUntilStored(backend, documentId, '0123456789')
 
     await backend.kill()
 
-    // 断线期间只做删除：这是状态向量不会推进的操作。
+    // 只做删除：这是不推进状态向量的操作。
     await selectLeadingCharacters(first, 2)
     await first.keyboard.press('Delete')
     await expect.poll(() => textOf(first)).toBe('23456789')
 
     await backend.restart()
-    await waitForServerSaved(first)
+    await waitForConnected(first)
 
-    // 全新客户端读到的就是删除后的内容，说明删除确实跨过了服务端。
-    await openDocumentAt(second, documentId)
+    // 另一端的删除也必须到达。
     await expect.poll(() => textOf(second)).toBe('23456789')
+    await waitUntilStored(backend, documentId, '23456789')
   })
 
-  test('刷新后先从本地恢复，重连后再与服务端合并', async ({ backend, first, openDocument }) => {
+  test('只阻断 WebSocket 时刷新，正文从本地缓存恢复', async ({ backend, first, openDocument }) => {
     const documentId = await openDocument(first)
-    await typeText(first, '刷新前已落盘')
-    await waitForServerSaved(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('已经写进缓存')
+    await expect.poll(() => textOf(first)).toBe('已经写进缓存')
+    await waitUntilStored(backend, documentId, '已经写进缓存')
 
-    await backend.kill()
+    // 只断 WS：页面资源仍由 Vite 提供，刷新可以完成。
+    const sockets = await controlWebSocket(first)
     await first.reload()
 
-    // 页面资源由 Vite 提供，仍然可以加载；正文来自 IndexedDB。
+    // 有缓存就能挂载编辑器并显示正文；没有缓存这里会是空等待。
     await expect(first.getByRole('textbox', { name: '文档正文' })).toBeVisible()
-    await expect.poll(() => textOf(first)).toBe('刷新前已落盘')
+    await expect.poll(() => textOf(first)).toBe('已经写进缓存')
 
-    await backend.restart()
-    await waitForServerSaved(first)
-    await expect.poll(() => textOf(first)).toBe('刷新前已落盘')
-
-    // 联网状态下再刷新一次：本地日志既有已确认记录也有服务端广播，
-    // 重放它们不能把正文变成两份。
-    const rowsBeforeSecondReload = readUpdates(backend.databasePath, documentId).length
+    sockets.allow()
     await first.reload()
-    await expect.poll(() => textOf(first)).toBe('刷新前已落盘')
-    await waitForServerSaved(first)
-    await expect.poll(() => textOf(first)).toBe('刷新前已落盘')
-    expect(readUpdates(backend.databasePath, documentId).length).toBeGreaterThanOrEqual(
-      rowsBeforeSecondReload,
-    )
+    await waitForConnected(first)
+    await expect.poll(() => textOf(first)).toBe('已经写进缓存')
   })
 })
 
-test.describe('存储故障', () => {
-  test('服务端写锁导致保存失败时如实报告，释放后恢复', async ({ backend, first, openDocument }) => {
-    await openDocument(first)
-    await typeText(first, '第一段已保存')
-    await waitForServerSaved(first)
+test.describe('服务重启与恢复', () => {
+  test('正常停机后新浏览器上下文仍能读到内容', async ({ backend, first, second, openDocument }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('停机前的内容')
+    await waitUntilStored(backend, documentId, '停机前的内容')
 
-    const lock = new SqliteWriteLock(backend.databasePath)
-    lock.open()
-    try {
-      await typeText(first, '写锁期间')
-      await expect(first.getByText('服务端保存失败', { exact: true })).toBeVisible()
+    // 关掉最后一个页面，再请求正常停止：lifespan 必须走完收尾流程。
+    await first.close()
+    const stopped = await backend.stopGracefully()
+    expect(stopped).toBe(true)
 
-      // 失败不等于丢弃：内容仍在编辑器里，本地也仍然保留。
-      await expect.poll(() => textOf(first)).toBe('第一段已保存写锁期间')
-    } finally {
-      lock.close()
-    }
+    await backend.restart()
 
-    await first.getByRole('button', { name: '重试' }).click()
-    await waitForServerSaved(first)
-    await expect.poll(() => textOf(first)).toBe('第一段已保存写锁期间')
+    // 全新上下文，没有任何本地缓存，内容只能来自数据库。
+    await openDocumentAt(second, documentId)
+    await expect.poll(() => textOf(second)).toBe('停机前的内容')
   })
 
-  test('本地写入失败时保留内容并明确报错，恢复后补写', async ({ first, openDocument }) => {
+  test('强制结束进程后新上下文仍能读到此前已写入的内容', async ({
+    backend,
+    first,
+    second,
+    openDocument,
+  }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('崩溃前已写入')
+    await waitUntilStored(backend, documentId, '崩溃前已写入')
+
+    // 强制结束：不走应用清理流程，也不依赖原浏览器补传。
+    await first.close()
+    await backend.kill()
+    await backend.restart()
+
+    await openDocumentAt(second, documentId)
+    await expect.poll(() => textOf(second)).toBe('崩溃前已写入')
+  })
+
+  test('超过一百次更新之后重启，内容依然完整', async ({ backend, first, second, openDocument }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+
+    // SQLiteYStore 每 100 次更新做一次检查点，这里刻意越过这个边界。
+    for (let index = 0; index < 120; index += 1) {
+      await first.keyboard.insertText('x')
+    }
+    const expected = 'x'.repeat(120)
+    await expect.poll(() => textOf(first), { timeout: 30_000 }).toBe(expected)
+    await waitUntilStored(backend, documentId, expected)
+
+    await first.close()
+    await backend.kill()
+    await backend.restart()
+
+    await openDocumentAt(second, documentId)
+    await expect.poll(() => textOf(second), { timeout: 30_000 }).toBe(expected)
+  })
+})
+
+test.describe('存储与恢复失败', () => {
+  test('存储不可用时创建文档返回错误，界面给出可操作提示', async ({ backend, first }) => {
+    backend.breakStorage()
+
+    await first.goto('/')
+    await first.getByRole('button', { name: '新建文档' }).click()
+
+    // 不能一直停在「正在打开」；要有明确提示而不是静默失败。
+    await expect(first.getByText(/无法连接服务端|STORAGE_UNAVAILABLE/)).toBeVisible({
+      timeout: 20_000,
+    })
+    // 也不应该跳到一个打不开的文档页面。
+    await expect(first).not.toHaveURL(/#\/documents\//)
+  })
+
+  test('本地缓存不可用时明确报错，不无限等待', async ({ first, backend }) => {
+    const documentId = await backend.createDocument()
+
     await first.addInitScript(() => {
-      const original = IDBObjectStore.prototype.add
-      const state = { fail: false }
-      Object.defineProperty(window, '__collabFailLocalWrites', {
-        get: () => state.fail,
-        set: (value: boolean) => {
-          state.fail = value
-        },
-      })
-      IDBObjectStore.prototype.add = function patched(this: IDBObjectStore, ...args: unknown[]) {
-        if ((window as unknown as { __collabFailLocalWrites: boolean }).__collabFailLocalWrites) {
-          // 在原生 API 层失败：事务会被中止，日志的 completed() 会拒绝。
-          throw new DOMException('模拟本地写入失败', 'UnknownError')
+      const original = indexedDB.open.bind(indexedDB)
+      indexedDB.open = ((name: string, ...rest: unknown[]) => {
+        if (String(name).startsWith('dom-collab-v2:')) {
+          throw new DOMException('模拟缓存不可用', 'UnknownError')
         }
-        return (original as (...rest: unknown[]) => IDBRequest).apply(this, args)
-      }
+        return (original as (...args: unknown[]) => IDBOpenDBRequest)(name, ...rest)
+      }) as typeof indexedDB.open
     })
 
-    await openDocument(first)
-    await typeText(first, '本地写不进去')
+    await first.goto(`/#/documents/${documentId}`)
 
-    await first.evaluate(() => {
-      ;(window as unknown as { __collabFailLocalWrites: boolean }).__collabFailLocalWrites = true
+    // 十秒上限内给出提示，并且提供重试入口。
+    await expect(first.getByText(/本地内容恢复失败|本地内容恢复超时/)).toBeVisible({
+      timeout: 20_000,
     })
-    await typeText(first, '这段会失败')
-    await expect(first.getByText('本地保存失败', { exact: true })).toBeVisible()
-    // 内存中的内容不能被清空。
-    await expect.poll(() => textOf(first)).toContain('这段会失败')
-
-    await first.evaluate(() => {
-      ;(window as unknown as { __collabFailLocalWrites: boolean }).__collabFailLocalWrites = false
-    })
-    await first.getByRole('button', { name: '重试' }).click()
-    await waitForServerSaved(first)
-    await expect.poll(() => textOf(first)).toContain('这段会失败')
+    await expect(first.getByRole('button', { name: '重试' })).toBeVisible()
+    // 正文没有被清空成「空文档」的假象：编辑器根本不该挂载。
+    await expect(first.getByRole('textbox', { name: '文档正文' })).toHaveCount(0)
   })
 })
 
 test.describe('并发与隔离', () => {
-  test('两端各自暂停上行后在相同位置插入，双方新增都保留', async ({
-    backend,
-    first,
-    second,
-    openDocument,
-  }) => {
-    const documentId = await openDocument(first)
-    await typeText(first, 'AB')
-    await waitForServerSaved(first)
-
-    await openDocumentAt(second, documentId)
-    await expect.poll(() => textOf(second)).toBe('AB')
-
-    // 同时阻断两端的确认发送，让两次插入真正并发到达服务端。
-    const firstGate = await backend.gates.arm('before_ack_send', { documentId })
-    const secondGate = await backend.gates.arm('before_ack_send', { documentId })
-
-    await focusEditor(first)
-    await first.keyboard.press('End')
-    await first.keyboard.press('ArrowLeft')
-    await settleSelection(first)
-    await first.keyboard.insertText('甲')
-
-    await focusEditor(second)
-    await second.keyboard.press('End')
-    await second.keyboard.press('ArrowLeft')
-    await settleSelection(second)
-    await second.keyboard.insertText('乙')
-
-    await backend.gates.wait(firstGate)
-    await backend.gates.wait(secondGate)
-    await backend.gates.releaseAll()
-
-    await waitForServerSaved(first, 40_000)
-    await waitForServerSaved(second, 40_000)
-
-    await expect.poll(async () => (await textOf(first)) === (await textOf(second))).toBe(true)
-    const merged = await textOf(first)
-    expect(merged).toHaveLength(4)
-    expect(merged).toContain('甲')
-    expect(merged).toContain('乙')
-    expect(merged).toContain('A')
-    expect(merged).toContain('B')
-  })
-
-  test('一端插入与另一端删除交叉时双方收敛，互不覆盖', async ({
-    backend,
-    first,
-    second,
-    openDocument,
-  }) => {
-    const documentId = await openDocument(first)
-    await typeText(first, 'abcdefgh')
-    await waitForServerSaved(first)
-
-    await openDocumentAt(second, documentId)
-    await expect.poll(() => textOf(second)).toBe('abcdefgh')
-
-    const firstGate = await backend.gates.arm('before_ack_send', { documentId })
-    const secondGate = await backend.gates.arm('before_ack_send', { documentId })
-
-    // 两个页面并发操作：一端在末尾插入，另一端删除开头两个字符。
-    await Promise.all([
-      (async () => {
-        await focusEditor(first)
-        await first.keyboard.press('End')
-        await settleSelection(first)
-        await first.keyboard.insertText('X')
-      })(),
-      (async () => {
-        await selectLeadingCharacters(second, 2)
-        await second.keyboard.press('Delete')
-      })(),
-    ])
-
-    await backend.gates.wait(firstGate)
-    await backend.gates.wait(secondGate)
-    await backend.gates.releaseAll()
-
-    await waitForServerSaved(first, 40_000)
-    await waitForServerSaved(second, 40_000)
-
-    await expect.poll(async () => (await textOf(first)) === (await textOf(second))).toBe(true)
-    const merged = await textOf(first)
-    // 删除掉的字符不能回来，插入的字符也不能丢——不存在整段旧内容覆盖新内容。
-    expect(merged).not.toContain('a')
-    expect(merged).not.toContain('b')
-    expect(merged).toContain('X')
-    expect(merged).toContain('cdefgh')
-  })
-
   test('同源两个标签页各自编辑，不产生重复正文', async ({
+    backend,
     first,
     siblingTab,
     openDocument,
@@ -359,7 +247,8 @@ test.describe('并发与隔离', () => {
     const documentId = await openDocument(first)
     await openDocumentAt(siblingTab, documentId)
 
-    await typeText(first, '第一个标签页')
+    await focusEditor(first)
+    await first.keyboard.insertText('第一个标签页')
     await expect.poll(() => textOf(siblingTab)).toBe('第一个标签页')
 
     await focusEditor(siblingTab)
@@ -371,19 +260,40 @@ test.describe('并发与隔离', () => {
     // 刷新其中一个标签页后仍然只有一份正文。
     await first.reload()
     await expect.poll(() => textOf(first)).toBe('第一个标签页，第二个标签页')
-    expect(documentId).toMatch(/^[0-9a-f-]{36}$/)
+    await waitUntilStored(backend, documentId, '第一个标签页，第二个标签页')
   })
 
-  test('离开文档后不再有新记录写入', async ({ backend, first, openDocument }) => {
+  test('同源两个标签页的协作经过服务端而不是本地广播', async ({
+    backend,
+    first,
+    siblingTab,
+    openDocument,
+  }) => {
     const documentId = await openDocument(first)
-    await typeText(first, '离开前')
-    await waitForServerSaved(first)
+    await openDocumentAt(siblingTab, documentId)
+    await waitForConnected(first)
+    await waitForConnected(siblingTab)
 
-    const before = readUpdates(backend.databasePath, documentId).length
-    await first.goto('/')
-    await expect(first.getByRole('button', { name: '新建文档' })).toBeVisible()
-    await first.waitForTimeout(1000)
+    await focusEditor(siblingTab)
+    await siblingTab.keyboard.insertText('必须经过 Python')
+    await expect.poll(() => textOf(first)).toBe('必须经过 Python')
 
-    expect(readUpdates(backend.databasePath, documentId).length).toBe(before)
+    // 服务端确实收到并保存了：这是「经过 Python」而不是跨标签页广播的证据。
+    await waitUntilStored(backend, documentId, '必须经过 Python')
+  })
+
+  test('不同文档的更新互相隔离', async ({ backend, first, second, openDocument }) => {
+    const leftId = await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('左文档')
+    await waitUntilStored(backend, leftId, '左文档')
+
+    const rightId = await openDocument(second)
+    await focusEditor(second)
+    await second.keyboard.insertText('右文档')
+    await waitUntilStored(backend, rightId, '右文档')
+
+    await expect.poll(() => backend.readStoredText(leftId)).toBe('左文档')
+    await expect.poll(() => backend.readStoredText(rightId)).toBe('右文档')
   })
 })

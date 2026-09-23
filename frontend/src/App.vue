@@ -1,9 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import * as Y from 'yjs'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
-import { SAVE_STATE_TEXT } from './collab/save-state'
-import { ApiUnavailableError, DocumentMissingError, createDocument } from './documents/api'
+import { ApiUnavailableError, createDocument, readDocument } from './documents/api'
 import { openDocumentSession, type DocumentSession } from './documents/session'
 import EditorPane from './editor/EditorPane.vue'
 
@@ -12,34 +10,46 @@ const ROUTE_PREFIX = '#/documents/'
 
 const documentId = ref<string | null>(null)
 const session = shallowRef<DocumentSession | null>(null)
-const sessionError = ref<string | null>(null)
-const busy = ref(false)
+/** 每次成功打开递增，用作编辑器的 key，保证视图不会被接到别的会话上。 */
+const sessionKey = ref(0)
+const opening = ref(false)
+const routeError = ref<string | null>(null)
 const linkInput = ref('')
-const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
-const plainTextFallback = ref<string | null>(null)
+const linkError = ref<string | null>(null)
+
+/**
+ * 打开代次：路由每次变化都会递增。
+ *
+ * 异步打开的结果如果已经过期就立即释放，绝不覆盖当前会话——否则快速切换文档时
+ * 会出现「地址栏是 B、正文和编辑目标还是 A」的串会话问题。
+ */
+let openGeneration = 0
 
 const shareLink = computed(() =>
-  documentId.value === null ? '' : `${window.location.origin}${window.location.pathname}${ROUTE_PREFIX}${documentId.value}`,
+  documentId.value === null
+    ? ''
+    : `${window.location.origin}${window.location.pathname}${ROUTE_PREFIX}${documentId.value}`,
 )
 
-const saveText = computed(() =>
-  session.value === null ? '' : SAVE_STATE_TEXT[session.value.state.value.save],
+const connectionText = computed((): string => {
+  if (opening.value) return '正在打开…'
+  const current = session.value
+  if (current === null) return ''
+  switch (current.connection.value) {
+    case 'connected':
+      return '已连接'
+    case 'connecting':
+      return '正在连接…'
+    default:
+      return '连接中断，可继续编辑'
+  }
+})
+
+const statusText = computed(() => session.value?.error.value ?? routeError.value ?? '')
+
+const canMount = computed(
+  () => session.value !== null && session.value.canMountEditor.value,
 )
-
-const connectionText = computed(() => {
-  if (session.value === null) return ''
-  return session.value.state.value.connected ? '已连接同步服务' : '未连接同步服务'
-})
-
-const canMount = computed(() => session.value?.canMountEditor.value === true)
-const paused = computed(() => session.value?.state.value.paused === true)
-const events = computed(() => session.value?.events.value ?? [])
-
-const showMissingDocument = computed(() => {
-  if (session.value === null) return false
-  if (session.value.canMountEditor.value) return false
-  return session.value.state.value.message?.includes('DOCUMENT_NOT_FOUND') === true
-})
 
 function routeFromHash(): string | null {
   const hash = window.location.hash
@@ -48,25 +58,50 @@ function routeFromHash(): string | null {
   return value.length > 0 ? decodeURIComponent(value) : null
 }
 
-async function closeSession(): Promise<void> {
-  const current = session.value
-  session.value = null
-  if (current !== null) await current.close()
-}
-
 async function applyRoute(): Promise<void> {
   const next = routeFromHash()
-  if (next === documentId.value) return
-  await closeSession()
+  const generation = (openGeneration += 1)
+
+  // 立即释放旧会话；清理带超时上限，不阻塞新的打开流程。
+  const previous = session.value
+  session.value = null
+  if (previous !== null) void previous.close()
+
   documentId.value = next
-  sessionError.value = null
-  copyState.value = 'idle'
-  plainTextFallback.value = null
-  if (next === null) return
+  routeError.value = null
+
+  if (next === null) {
+    opening.value = false
+    return
+  }
+
+  opening.value = true
   try {
-    session.value = await openDocumentSession(next)
+    // 打开前先确认文档存在，缺失时给出明确提示而不是一直等待。
+    await readDocument(next)
+    // 校验期间路由可能又变了：这次结果已经过期，直接放弃。
+    if (generation !== openGeneration) return
   } catch (error) {
-    sessionError.value = error instanceof Error ? error.message : String(error)
+    if (generation !== openGeneration) return
+    opening.value = false
+    routeError.value = error instanceof Error ? error.message : String(error)
+    return
+  }
+
+  try {
+    const opened = await openDocumentSession(next)
+    if (generation !== openGeneration) {
+      // 结果已过期：释放掉，不要覆盖当前会话。
+      void opened.close()
+      return
+    }
+    session.value = opened
+    sessionKey.value += 1
+    opening.value = false
+  } catch (error) {
+    if (generation !== openGeneration) return
+    opening.value = false
+    routeError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
@@ -77,23 +112,20 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', () => void applyRoute())
-  void closeSession()
+  openGeneration += 1
+  const current = session.value
+  session.value = null
+  if (current !== null) void current.close()
 })
 
 async function newDocument(): Promise<void> {
-  if (busy.value) return
-  busy.value = true
-  sessionError.value = null
+  linkError.value = null
   try {
     const meta = await createDocument()
     window.location.hash = `${ROUTE_PREFIX}${meta.documentId}`
   } catch (error) {
-    sessionError.value =
-      error instanceof DocumentMissingError || error instanceof ApiUnavailableError
-        ? error.message
-        : String(error)
-  } finally {
-    busy.value = false
+    linkError.value =
+      error instanceof ApiUnavailableError ? error.message : String(error)
   }
 }
 
@@ -103,61 +135,30 @@ function openLink(): void {
   const marker = value.indexOf(ROUTE_PREFIX)
   const id = marker >= 0 ? value.slice(marker + ROUTE_PREFIX.length) : value
   if (id.length === 0) {
-    sessionError.value = '链接里没有文档标识'
+    linkError.value = '链接里没有文档标识'
     return
   }
+  linkError.value = null
   window.location.hash = `${ROUTE_PREFIX}${id}`
 }
 
 async function copyLink(): Promise<void> {
   try {
     await navigator.clipboard.writeText(shareLink.value)
-    copyState.value = 'copied'
   } catch {
-    // 复制失败时提供可选中的纯文本，而不是假装已经复制。
-    copyState.value = 'failed'
-    plainTextFallback.value = shareLink.value
+    linkError.value = `无法访问剪贴板，请手动复制：${shareLink.value}`
   }
 }
 
 function retry(): void {
-  session.value?.retry()
-}
-
-/** 服务端保存失败或本地存储失败时，让用户能把正文复制出去。 */
-async function copyBody(): Promise<void> {
-  const value = plainBody()
-  try {
-    await navigator.clipboard.writeText(value)
-    copyState.value = 'copied'
-  } catch {
-    copyState.value = 'failed'
-    plainTextFallback.value = value
-  }
-}
-
-function plainBody(): string {
   const current = session.value
-  if (current === null) return ''
-  return current.doc
-    .getXmlFragment('body')
-    .toArray()
-    .map((node) => {
-      if (!(node instanceof Y.XmlElement)) return ''
-      return node
-        .toArray()
-        .map((child) => (child instanceof Y.XmlText ? child.toString() : ''))
-        .join('')
-    })
-    .join('\n')
+  if (current !== null) {
+    current.retry()
+    return
+  }
+  // 会话根本没建立起来（本地恢复失败或 HTTP 校验失败）：重新走一次打开流程。
+  void applyRoute()
 }
-
-watch(
-  () => session.value?.state.value.message ?? null,
-  (message) => {
-    if (message !== null && message.length > 0) sessionError.value = message
-  },
-)
 </script>
 
 <template>
@@ -169,9 +170,7 @@ watch(
           创建文档后把链接发给另一个人，两个浏览器就能在同一段文字里一起编辑。
         </p>
         <div class="home-actions">
-          <button type="button" class="primary-button" :disabled="busy" @click="newDocument">
-            新建文档
-          </button>
+          <button type="button" class="primary-button" @click="newDocument">新建文档</button>
         </div>
         <div class="home-open">
           <label class="field-label" for="document-link">打开已有文档链接</label>
@@ -185,7 +184,7 @@ watch(
           />
           <button type="button" class="toolbar-button" @click="openLink">打开</button>
         </div>
-        <p v-if="sessionError !== null" class="error-text" role="alert">{{ sessionError }}</p>
+        <p v-if="linkError !== null" class="error-text" role="alert">{{ linkError }}</p>
       </section>
     </template>
 
@@ -197,57 +196,24 @@ watch(
         </div>
         <div class="document-actions">
           <button type="button" class="toolbar-button" @click="copyLink">复制协作链接</button>
-          <button type="button" class="toolbar-button" @click="copyBody">复制正文</button>
         </div>
       </header>
 
-      <p
-        class="save-status"
-        :data-save-state="session?.state.value.save ?? 'restoring'"
-        role="status"
-        aria-live="polite"
-      >
-        {{ saveText }}
-      </p>
-      <p class="connection-status">{{ connectionText }}</p>
+      <p class="connection-status" role="status" aria-live="polite">{{ connectionText }}</p>
 
-      <p v-if="copyState === 'copied'" class="info-text">已复制到剪贴板</p>
-      <p v-else-if="copyState === 'failed'" class="error-text">
-        无法访问剪贴板，请手动复制下面的内容
-      </p>
-      <textarea
-        v-if="plainTextFallback !== null"
-        class="plain-text-fallback"
-        aria-label="可复制的纯文本"
-        readonly
-        :value="plainTextFallback"
-      ></textarea>
-
-      <p v-if="showMissingDocument" class="error-text" role="alert">文档不存在</p>
-      <template v-else-if="canMount">
-        <EditorPane v-if="session !== null" :doc="session.doc" :paused="paused" />
-        <p v-if="paused" class="error-text" role="alert">
-          待同步内容过多，已暂停新增编辑。已有内容仍保存在本地。
-        </p>
-      </template>
-      <p v-else class="info-text">正在等待服务端提供文档正文…</p>
-
-      <p v-if="sessionError !== null && !showMissingDocument" class="error-text" role="alert">
-        {{ sessionError }}
-      </p>
-      <p v-if="sessionError !== null || paused" class="document-actions">
+      <p v-if="statusText.length > 0" class="error-text" role="alert">{{ statusText }}</p>
+      <p v-if="statusText.length > 0" class="document-actions">
         <button type="button" class="toolbar-button" @click="retry">重试</button>
       </p>
 
-      <details class="debug-panel">
-        <summary>技术详情</summary>
-        <ul class="debug-events">
-          <li v-for="(event, index) in events" :key="index">
-            <span class="debug-kind">{{ event.kind }}</span>
-            <span class="debug-detail">{{ event.detail }}</span>
-          </li>
-        </ul>
-      </details>
+      <EditorPane
+        v-if="canMount && session !== null"
+        :key="sessionKey"
+        :doc="session.doc"
+      />
+      <p v-else-if="!opening && statusText.length === 0" class="info-text">
+        正在等待服务端提供文档正文…
+      </p>
     </template>
   </main>
 </template>
