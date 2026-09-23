@@ -300,6 +300,7 @@ function retry(): void {
         :key="sessionKey"
         :doc="session.doc"
         :provider="session.provider"
+        :connected="session.connection.value === 'connected'"
       />
       <p v-else-if="!opening && statusText.length === 0" class="info-text">
         正在等待服务端提供文档正文…

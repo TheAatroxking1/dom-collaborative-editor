@@ -2,21 +2,27 @@
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import type { Node as ProseMirrorNode, Schema } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import type { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 
 import { tryCopyText } from '../clipboard'
 import { editorExtensions } from './extensions'
+import { usePresence } from './presence'
 
 const props = defineProps<{
   doc: Y.Doc
   /** 会话已有的网络 Provider：协作光标复用它的 Awareness，不另建连接。 */
   provider: WebsocketProvider
+  /** 当前是否已连接同步服务；断网时隐藏远端覆盖层。 */
+  connected: boolean
 }>()
 
 const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
 const copyFallback = ref<string | null>(null)
+
+/** 包住正文与覆盖层的非滚动相对容器：覆盖层的坐标以它为原点。 */
+const surface = ref<HTMLElement | null>(null)
 
 /**
  * 把一段纯文本转成行内内容，换行还原成 HardBreak。
@@ -126,6 +132,14 @@ const editor = useEditor({
   },
 })
 
+const { pointers, onPointerMove, onPointerLeave } = usePresence({
+  editor,
+  doc: props.doc,
+  provider: props.provider,
+  connected: computed(() => props.connected),
+  surface,
+})
+
 onBeforeUnmount(() => {
   // 先销毁编辑视图，避免会话关闭后编辑内核仍持有 Y.Doc 订阅。
   editor.value?.destroy()
@@ -182,6 +196,31 @@ async function copyBody(): Promise<void> {
       :value="copyFallback"
     ></textarea>
 
-    <EditorContent :editor="editor" class="editor-surface" />
+    <div
+      ref="surface"
+      class="editor-surface"
+      @pointermove="onPointerMove"
+      @pointerleave="onPointerLeave"
+    >
+      <EditorContent :editor="editor" />
+      <!--
+        远端鼠标指针画在正文之外：覆盖层不接收事件、不参与辅助技术朗读。
+        正文 DOM 不被改写，装饰也不进入复制结果。
+      -->
+      <div class="presence-overlay" aria-hidden="true">
+        <span
+          v-for="pointer in pointers"
+          :key="pointer.clientId"
+          class="remote-pointer"
+          data-remote-pointer
+          :style="{ left: `${pointer.left}px`, top: `${pointer.top}px` }"
+        >
+          <span class="remote-pointer-dot" :style="{ background: pointer.color }"></span>
+          <span class="remote-pointer-name" :style="{ background: pointer.color }">
+            {{ pointer.name }}
+          </span>
+        </span>
+      </div>
+    </div>
   </div>
 </template>

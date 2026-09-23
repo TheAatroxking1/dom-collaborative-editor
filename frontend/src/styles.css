@@ -339,3 +339,42 @@ h1 {
   user-select: none;
   pointer-events: none;
 }
+
+
+/* 正文与远端覆盖层的容器：覆盖层坐标以它为原点，自身不滚动。 */
+.editor-surface {
+  position: relative;
+}
+
+.presence-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 远端鼠标：只表示所在段落内的大致位置，不是精确字符位置。 */
+.remote-pointer {
+  position: absolute;
+  transform: translate(-3px, -3px);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.2rem;
+}
+
+.remote-pointer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid white;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.remote-pointer-name {
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  color: white;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  user-select: none;
+}
