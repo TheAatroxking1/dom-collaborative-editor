@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
 import { ApiUnavailableError, createDocument, readDocument } from './documents/api'
+import DocumentBackup from './documents/DocumentBackup.vue'
 import { openDocumentSession, type DocumentSession } from './documents/session'
 import EditorPane from './editor/EditorPane.vue'
 import { offlineState } from './offline'
@@ -167,6 +168,11 @@ function openLink(): void {
   window.location.hash = `${ROUTE_PREFIX}${id}`
 }
 
+/** 备份面板请求打开原文档：只走既有的 hash 路由，不另建一套导航。 */
+function openDocument(id: string): void {
+  window.location.hash = `${ROUTE_PREFIX}${id}`
+}
+
 async function copyLink(): Promise<void> {
   try {
     await navigator.clipboard.writeText(shareLink.value)
@@ -261,5 +267,15 @@ function retry(): void {
         正在等待服务端提供文档正文…
       </p>
     </template>
+
+    <!--
+      备份面板在两种页面下都挂载一次：换地址迁移时用户可能还没打开文档，
+      也可能正开着文档。它只读当前会话，不参与路由。
+    -->
+    <DocumentBackup
+      :document-id="documentId"
+      :session="session"
+      @open-document="openDocument"
+    />
   </main>
 </template>

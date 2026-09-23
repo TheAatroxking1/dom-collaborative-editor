@@ -41,11 +41,18 @@ export async function createDocument(): Promise<DocumentMeta> {
   return readMeta(response, '')
 }
 
-export async function readDocument(documentId: string): Promise<DocumentMeta> {
+export async function readDocument(
+  documentId: string,
+  signal?: AbortSignal,
+): Promise<DocumentMeta> {
   let response: Response
   try {
-    response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`)
+    response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, { signal })
   } catch (error) {
+    // 调用方主动中止与网络失败要区分开，否则超时会被当成「文档不存在」。
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiUnavailableError('请求已超时')
+    }
     throw new ApiUnavailableError(String(error))
   }
   return readMeta(response, documentId)

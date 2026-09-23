@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test'
 
@@ -29,6 +30,14 @@ const builtDirectory = join(frontendDirectory, 'dist')
 
 export const PRODUCTION_PORT = Number(process.env.COLLAB_E2E_PRODUCTION_PORT ?? 5483)
 export const PRODUCTION_ORIGIN = `http://127.0.0.1:${PRODUCTION_PORT}`
+
+/**
+ * 指向同一个服务的另一个 origin。
+ *
+ * 浏览器按 origin 隔离存储，`127.0.0.1` 与 `localhost` 是两份不同的本地存储，
+ * 因此可以用一个服务进程验证「换地址后本地内容不会自动跟过去」。
+ */
+export const ALTERNATE_ORIGIN = `http://localhost:${PRODUCTION_PORT}`
 
 const READY_POLL_INTERVAL_MS = 100
 const READY_TIMEOUT_MS = 30_000
@@ -148,6 +157,20 @@ export class ProductionServer {
     const response = await fetch(`${PRODUCTION_ORIGIN}/api/documents`, { method: 'POST' })
     if (response.status !== 201) throw new Error(`创建文档失败：HTTP ${response.status}`)
     return ((await response.json()) as { documentId: string }).documentId
+  }
+
+  /**
+   * 从文档目录里移除一条记录，用来制造「客户端有备份、服务端没有这份文档」。
+   *
+   * 只作用于测试自己的临时数据目录。
+   */
+  removeDocumentFromDirectory(documentId: string): void {
+    const database = new DatabaseSync(join(this.dataDirectory, 'documents.sqlite3'))
+    try {
+      database.prepare('DELETE FROM documents WHERE id = ?').run(documentId)
+    } finally {
+      database.close()
+    }
   }
 
   /**

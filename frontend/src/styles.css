@@ -239,3 +239,72 @@ h1 {
   background: var(--surface-muted);
   color: var(--text);
 }
+
+/* 备份与迁移面板：折叠在页面底部，不干扰编辑。 */
+.backup-panel {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.backup-title {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+.backup-subtitle {
+  font-size: 0.9rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.backup-subtitle,
+.backup-title {
+  color: var(--text);
+}
+
+.backup-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0.75rem 0;
+}
+
+.backup-file-label {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+}
+
+.backup-file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.backup-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+}
+
+.backup-meta dt {
+  color: var(--text-muted);
+}
+
+.backup-meta dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.backup-preview {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+}
