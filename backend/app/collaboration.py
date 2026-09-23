@@ -101,13 +101,19 @@ async def _probe_store(store: SQLiteYStore) -> None:
 async def _store_holds_state(store: SQLiteYStore, document: Doc) -> bool:
     """确认存储里的内容与给定文档完全一致。
 
-    用状态向量比较：重放存储里的全部更新后，状态向量相同即说明存储持有同一份历史。
-    这是写入之后的必要校验——库会静默吞掉 SQL 异常，``write()`` 返回不代表写成功。
+    这里刻意**不**比较状态向量：删除操作不推进客户端时钟，所以「内存里删了、
+    存储里没删」时两边状态向量完全相同，只比较状态向量会把漏写判定成成功。
+
+    也不比较单向或双向差量：``get_update(state)`` 总会带上删除集，只要文档有过
+    删除，差量就非空，无法用来判断「是否一致」。
+
+    实际采用全量编码的字节比较，它同时覆盖结构体与删除集。编码器对同一份历史
+    （相同的结构体与删除集）产出相同字节，无论这些更新当初是分几条写入的。
     """
     restored = Doc()
     if not await _apply_store_state(restored, store):
         return False
-    return restored.get_state() == document.get_state()
+    return restored.get_update() == document.get_update()
 
 
 async def read_document_state(database_path: Path, document_id: str) -> Doc:

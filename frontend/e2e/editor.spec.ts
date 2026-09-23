@@ -204,6 +204,47 @@ test.describe('单人编辑', () => {
     await expect.poll(() => textOf(first)).toBe('XZ')
   })
 
+  test('跨段选中后粘贴单行，光标落在粘贴内容之后', async ({ first, openDocument }) => {
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('abcd')
+    await first.keyboard.press('Enter')
+    await first.keyboard.insertText('efgh')
+    await expect.poll(() => countParagraphs(first)).toBe(2)
+
+    // 光标打完字在第二段，先上到第一段，再到第二个字符，
+    // 然后按列向下扩展——选区即中间的 cd + 段落边界 + ef。
+    await first.keyboard.press('ArrowUp')
+    await settleSelection(first)
+    await first.keyboard.press('Home')
+    await settleSelection(first)
+    for (let index = 0; index < 2; index += 1) {
+      await first.keyboard.press('ArrowRight')
+      await settleSelection(first)
+    }
+    await first.keyboard.press('Shift+ArrowDown')
+    await settleSelection(first)
+
+    // 确认选区真的跨越了两段，而不是只落在其中一段里。
+    await expect
+      .poll(() =>
+        first.evaluate(() => {
+          const selection = window.getSelection()
+          return selection === null
+            ? ''
+            : `${selection.anchorNode?.textContent ?? ''}|${selection.focusNode?.textContent ?? ''}`
+        }),
+      )
+      .toBe('abcd|efgh')
+
+    await pasteText(first, 'X')
+    await expect.poll(() => textOf(first)).toBe('abXgh')
+
+    // 跨段落粘贴时前缀会被合进同一个段落，光标必须落在前缀与粘贴内容之后。
+    await first.keyboard.insertText('Z')
+    await expect.poll(() => textOf(first)).toBe('abXZgh')
+  })
+
   test('粘贴只取纯文本，且按换行拆成段落', async ({ first, openDocument }) => {
     await openDocument(first)
     await focusEditor(first)

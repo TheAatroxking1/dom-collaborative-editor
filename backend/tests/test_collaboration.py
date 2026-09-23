@@ -223,6 +223,61 @@ def test_shutdown_detects_silently_failed_write(data_directory: Path):
     run(scenario())
 
 
+def test_shutdown_detects_silently_dropped_deletion(data_directory: Path):
+    """停机校验必须覆盖删除，不能只看状态向量。
+
+    删除不推进客户端时钟，所以「内存已删、存储未删」时两边状态向量完全相同。
+    只比较状态向量会把这种漏写判定为成功，重新读取时拿到的还是删除前的内容。
+    """
+
+    async def scenario() -> None:
+        path = updates_path(data_directory)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        collaboration = Collaboration(path)
+        await collaboration.start()
+        document_id = new_document_id()
+        await collaboration.create_document_state(document_id)
+        room = await collaboration.get_ready_room(document_id)
+        real_store = room.ystore
+        assert real_store is not None
+
+        # 先插入 abc 并确认真的落盘（直接写真实存储，不走房间的后台调度）。
+        write_into_first_paragraph(room.ydoc, "abc")
+        await real_store.write(room.ydoc.get_update())
+        assert await _stored_text(data_directory, document_id) == "abc"
+
+        # 之后所有写入都被静默丢弃，再删除 b。
+        class SilentlyDroppingWrite:
+            async def write(self, _data: bytes) -> None:
+                return None
+
+            def read(self):
+                return real_store.read()
+
+        room.ystore = SilentlyDroppingWrite()  # type: ignore[assignment]
+
+        node = room.ydoc.get("body", type=XmlFragment).children[0].children[0]
+        del node[1:2]
+
+        # 前提确认：删除前后状态向量一致，这正是只看状态向量会漏判的原因。
+        assert first_paragraph_text(room.ydoc) == "ac"
+
+        with pytest.raises(StorageUnavailable):
+            await collaboration.close()
+
+        # 存储里仍然是删除前的内容，说明这次漏写被检测出来了。
+        assert await _stored_text(data_directory, document_id) == "abc"
+        assert collaboration.failures
+
+    run(scenario())
+
+
+async def _stored_text(data_directory: Path, document_id: str) -> str:
+    restored = await read_document_state(updates_path(data_directory), document_id)
+    return first_paragraph_text(restored)
+
+
 def test_shutdown_success_is_recorded_as_success(data_directory: Path):
     """正常停机时不产生失败记录，内容确实可读回。"""
 

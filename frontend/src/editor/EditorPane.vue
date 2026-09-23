@@ -107,9 +107,14 @@ const editor = useEditor({
       const tr = state.tr.replaceWith(start, end, paragraphs)
       // 光标放在最后一行粘贴内容之后、原有后缀之前。
       // 用段落自身的大小累加，不依赖映射的边界语义。
+      //
+      // 只有一个段落时，前缀也被合进了这一段（选区跨段落或覆盖整个文档），
+      // 所以进入该段落后的偏移要把前缀长度算上，否则光标会落在粘贴内容之前。
+      const offsetInLastParagraph =
+        (lines.length === 1 ? prefix.length : 0) + last.length
       let cursor = tr.mapping.map(start)
       for (const paragraph of paragraphs.slice(0, -1)) cursor += paragraph.nodeSize
-      cursor += 1 + last.length
+      cursor += 1 + offsetInLastParagraph
       tr.setSelection(TextSelection.create(tr.doc, cursor))
       dispatch(tr.scrollIntoView())
       return true
