@@ -153,7 +153,94 @@ const {
   onPointerCancel,
   onClickCapture,
   clear: clearSelection,
+  selectedText,
+  deleteSelected,
 } = useParagraphSelection(overlayContext)
+
+/**
+ * 复制一段文本并给出统一反馈。
+ *
+ * 复制正文与复制所选段落共用：字符串为空也要照常复制——只选中空段时，
+ * 空字符串就是正确的结果。
+ */
+async function copyText(value: string): Promise<void> {
+  if (await tryCopyText(value)) {
+    copyState.value = 'copied'
+    copyFallback.value = null
+    return
+  }
+  // 剪贴板不可用时提供可手动选择的文本，而不是假装已经复制。
+  copyState.value = 'failed'
+  copyFallback.value = value
+}
+
+/** 复制所选段落。复制后保留选区，方便接着做别的操作。 */
+async function copySelection(): Promise<void> {
+  const value = selectedText()
+  if (value === null) {
+    copyState.value = 'failed'
+    copyFallback.value = null
+    return
+  }
+  await copyText(value)
+}
+
+/** 删除所选段落。成功才清除选区；失败不误报成功。 */
+function deleteSelection(): void {
+  if (!deleteSelected()) {
+    copyState.value = 'failed'
+    copyFallback.value = null
+  }
+}
+
+/**
+ * 段落选区存在时的快捷键。
+ *
+ * 只在正文或已聚焦的外壳上生效，且不拦截输入框、文本框与其他交互控件；中文组合
+ * 输入期间一律放行。撤销/重做继续交给既有协作历史，不在这里另建一套。
+ */
+function onKeyDown(event: KeyboardEvent): void {
+  if (selectedCount.value === 0) return
+  if (editor.value?.view.composing === true) return
+
+  const target = event.target as HTMLElement | null
+  if (target !== null) {
+    const tag = target.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    if (target.isContentEditable && target !== editor.value?.view.dom) return
+  }
+
+  const modifier = event.ctrlKey || event.metaKey
+  if (modifier && (event.key === 'c' || event.key === 'C')) {
+    // 让原生 copy 事件填剪贴板，不在这里抢占。
+    return
+  }
+  if (modifier && (event.key === 'z' || event.key === 'Z' || event.key === 'y')) {
+    return
+  }
+  if (modifier) return
+
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault()
+    deleteSelection()
+    return
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    clearSelection()
+  }
+}
+
+/** 原生复制：同步填入 text/plain，不全局抢占剪贴板事件。 */
+function onCopy(event: ClipboardEvent): void {
+  if (selectedCount.value === 0) return
+  const value = selectedText()
+  if (value === null) return
+  event.clipboardData?.setData('text/plain', value)
+  event.preventDefault()
+  copyState.value = 'copied'
+  copyFallback.value = null
+}
 
 onBeforeUnmount(() => {
   // 先销毁编辑视图，避免会话关闭后编辑内核仍持有 Y.Doc 订阅。
@@ -179,15 +266,7 @@ function plainText(): string {
 }
 
 async function copyBody(): Promise<void> {
-  const value = plainText()
-  if (await tryCopyText(value)) {
-    copyState.value = 'copied'
-    copyFallback.value = null
-    return
-  }
-  // 剪贴板不可用时提供可手动选择的文本，而不是假装已经复制。
-  copyState.value = 'failed'
-  copyFallback.value = value
+  await copyText(plainText())
 }
 </script>
 
@@ -203,6 +282,12 @@ async function copyBody(): Promise<void> {
       <button type="button" class="toolbar-button" @click="copyBody">复制正文</button>
       <template v-if="selectedCount > 0">
         <span class="selection-count" data-selection-count>已选 {{ selectedCount }} 段</span>
+        <button type="button" class="toolbar-button" @click="copySelection">
+          复制所选段落
+        </button>
+        <button type="button" class="toolbar-button" @click="deleteSelection">
+          删除所选段落
+        </button>
         <button type="button" class="toolbar-button" @click="clearSelection">清除选择</button>
       </template>
     </div>
@@ -232,6 +317,8 @@ async function copyBody(): Promise<void> {
       @pointercancel="onPointerCancel"
       @pointerleave="onPointerLeave"
       @click.capture="onClickCapture"
+      @keydown="onKeyDown"
+      @copy="onCopy"
     >
       <EditorContent :editor="editor" />
       <!--

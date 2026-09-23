@@ -265,3 +265,150 @@ test.describe('段落引用的身份', () => {
     await expect(first.locator('[data-local-paragraph-selection]')).toHaveCount(0)
   })
 })
+
+test.describe('批量复制与删除', () => {
+  test('一批删除只需要一次撤销', async ({ first, second, openDocument }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await pasteText(first, '保留\n删除甲\n删除乙')
+    await openDocumentAt(second, documentId)
+    await waitForConnected(second)
+    await expect.poll(() => editorText(second)).toBe('保留\n删除甲\n删除乙')
+
+    await dragParagraphs(first, 1, 2)
+    await expect.poll(() => selectedCount(first)).toBe('已选 2 段')
+
+    await first.getByRole('button', { name: '删除所选段落' }).click()
+    await expect.poll(() => editorText(first)).toBe('保留')
+    await expect.poll(() => editorText(second)).toBe('保留')
+    // 删除成功后清除选区。
+    await expect(first.locator('[data-selection-count]')).toHaveCount(0)
+
+    await first.getByRole('button', { name: '撤销', exact: true }).click()
+    await expect.poll(() => editorText(first)).toBe('保留\n删除甲\n删除乙')
+    await expect.poll(() => editorText(second)).toBe('保留\n删除甲\n删除乙')
+
+    await first.getByRole('button', { name: '重做', exact: true }).click()
+    await expect.poll(() => editorText(second)).toBe('保留')
+  })
+
+  test('复制所选段落保留顺序、换行与空段，且不移除选区', async ({ first, openDocument }) => {
+    await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('甲乙')
+    await first.keyboard.press('Shift+Enter')
+    await first.keyboard.insertText('丙🙂')
+    await first.keyboard.press('Enter')
+    await first.keyboard.press('Enter')
+    await first.keyboard.insertText('最后')
+    await expect.poll(() => editorText(first)).toBe('甲乙\n丙🙂\n\n最后')
+
+    await dragParagraphs(first, 0, 2)
+    await expect.poll(() => selectedCount(first)).toBe('已选 3 段')
+
+    await first.getByRole('button', { name: '复制所选段落' }).click()
+    await expect(first.getByText('已复制正文')).toBeVisible()
+
+    const copied = (await first.evaluate(() => navigator.clipboard.readText())).replace(
+      /\r\n/g,
+      '\n',
+    )
+    // 三段全部选中：段内软换行保留为换行，空段保留为空行，顺序不变。
+    expect(copied).toBe('甲乙\n丙🙂\n\n最后')
+    // 复制后选区仍在。
+    await expect.poll(() => selectedCount(first)).toBe('已选 3 段')
+  })
+
+  test('剪贴板不可用时给出可手动复制的所选文本', async ({ first, openDocument }) => {
+    await first.addInitScript(() => {
+      Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
+    })
+    await openDocument(first)
+    await focusEditor(first)
+    await pasteText(first, '甲\n乙')
+    await expect.poll(() => editorText(first)).toBe('甲\n乙')
+
+    await dragParagraphs(first, 0, 1)
+    await expect.poll(() => selectedCount(first)).toBe('已选 2 段')
+    await first.getByRole('button', { name: '复制所选段落' }).click()
+
+    await expect(first.getByText(/无法访问剪贴板/)).toBeVisible()
+    await expect(first.getByRole('textbox', { name: '可复制的纯文本' })).toHaveValue('甲\n乙')
+  })
+
+  test('全部段落被选中删除后仍有一个可输入的空段，撤销可恢复', async ({
+    first,
+    second,
+    openDocument,
+  }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await pasteText(first, '甲\n乙')
+    await openDocumentAt(second, documentId)
+    await waitForConnected(second)
+
+    await dragParagraphs(first, 0, 1)
+    await expect.poll(() => selectedCount(first)).toBe('已选 2 段')
+    await first.getByRole('button', { name: '删除所选段落' }).click()
+
+    await expect.poll(() => editorText(first)).toBe('')
+    await expect(first.locator('.editor-body > p')).toHaveCount(1)
+    await expect.poll(() => editorText(second)).toBe('')
+
+    // 空段可以直接输入。
+    await focusEditor(first)
+    await first.keyboard.insertText('重新开始')
+    await expect.poll(() => editorText(second)).toBe('重新开始')
+
+    // 第二次撤销回到空段，第一次撤销恢复被删除的两段。
+    await first.getByRole('button', { name: '撤销', exact: true }).click()
+    await expect.poll(() => editorText(first)).toBe('')
+    await first.getByRole('button', { name: '撤销', exact: true }).click()
+    await expect.poll(() => editorText(first)).toBe('甲\n乙')
+  })
+
+  test('删除只作用于仍有效的那几段，不误删另一端新插入的段落', async ({
+    first,
+    second,
+    openDocument,
+  }) => {
+    const documentId = await openDocument(first)
+    await openDocumentAt(second, documentId)
+    await waitForConnected(second)
+    await prepareThreeParagraphs(first)
+
+    await dragParagraphs(first, 1, 2)
+    await expect.poll(() => selectedCount(first)).toBe('已选 2 段')
+
+    // 另一端在最前面插入一段。
+    await focusEditor(second)
+    await second.keyboard.press('Control+Home')
+    await second.keyboard.insertText('新插入')
+    await second.keyboard.press('Enter')
+    await expect.poll(() => editorText(first)).toContain('新插入')
+
+    await first.getByRole('button', { name: '删除所选段落' }).click()
+    // 只删原来的「第二段」「第三段」，另一端新插入的段落必须留下。
+    await expect.poll(() => editorText(first)).toBe('新插入\n第一段')
+    await expect.poll(() => editorText(second)).toBe('新插入\n第一段')
+  })
+
+  test('离线选段并删除，重连后两端收敛', async ({ backend, first, second, openDocument }) => {
+    const documentId = await openDocument(first)
+    await openDocumentAt(second, documentId)
+    await waitForConnected(second)
+    await prepareThreeParagraphs(first)
+
+    await backend.kill()
+    await dragParagraphs(first, 0, 0)
+    await expect.poll(() => selectedCount(first)).toBe('已选 1 段')
+    await first.getByRole('button', { name: '删除所选段落' }).click()
+    await expect.poll(() => editorText(first)).toBe('第二段\n第三段')
+
+    await backend.restart()
+    await waitForConnected(first)
+    await expect.poll(() => editorText(second), { timeout: 20_000 }).toBe('第二段\n第三段')
+    // 临时状态不参与持久化：重连后不把旧选区当成正文更新重放。
+    await expect.poll(() => editorText(first)).toBe('第二段\n第三段')
+  })
+})

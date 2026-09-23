@@ -1,4 +1,8 @@
+import type { Editor } from '@tiptap/core'
 import { computed, onBeforeUnmount, ref, watch, type ComputedRef, type Ref } from 'vue'
+import { Selection } from '@tiptap/pm/state'
+import { yUndoPluginKey } from '@tiptap/y-tiptap'
+import type * as Y from 'yjs'
 
 import {
   isParagraphRef,
@@ -49,6 +53,13 @@ export type ParagraphSelection = {
   clear: () => void
   /** 当前选中的段落，按文档顺序；快照不可用时为 null。 */
   selectedSnapshots: () => ParagraphSnapshot[] | null
+  /**
+   * 选中段落的纯文本，按执行时的文档顺序，段间一个换行，HardBreak 保留为换行。
+   * 没有选中段或快照不可用时返回 null——**空字符串是合法结果**（只选中了空段）。
+   */
+  selectedText: () => string | null
+  /** 一次事务删除全部选中段落；成功返回 true。 */
+  deleteSelected: () => boolean
 }
 
 const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/
@@ -366,6 +377,42 @@ export function useParagraphSelection(context: OverlayContext): ParagraphSelecti
 
   schedule()
 
+  /**
+   * 当前选中的段落快照，按文档顺序。
+   *
+   * 定义为具名函数而不是对象方法：调用方会解构返回值，`this` 在解构后就丢了，
+   * 方法内部再调 `this.xxx` 会直接抛错。
+   */
+  const selectedSnapshots = (): ParagraphSnapshot[] | null => {
+    const surface = context.surface.value
+    if (surface === null) return null
+    const editor = context.editor.value
+    if (editor === undefined) return null
+    const snapshot = readParagraphs(editor, context.doc)
+    if (snapshot === null) return null
+    const wanted = new Set(selectedRefs.value.map(refKey))
+    return snapshot.filter((entry) => wanted.has(refKey(entry.ref)))
+  }
+
+  const selectedText = (): string | null => {
+    const chosen = selectedSnapshots()
+    if (chosen === null || chosen.length === 0) return null
+    // 按当前文档顺序取执行时的内容：不使用选区建立时的快照。
+    return chosen
+      .map((entry) => entry.node.textBetween(0, entry.node.content.size, '\n', '\n'))
+      .join('\n')
+  }
+
+  const deleteSelected = (): boolean => {
+    const editor = context.editor.value
+    if (editor === undefined) return false
+    const chosen = selectedSnapshots()
+    if (chosen === null || chosen.length === 0) return false
+    if (!deleteParagraphs(editor, chosen)) return false
+    clear()
+    return true
+  }
+
   return {
     selectedCount,
     rectangles,
@@ -376,15 +423,44 @@ export function useParagraphSelection(context: OverlayContext): ParagraphSelecti
     onPointerCancel,
     onClickCapture,
     clear,
-    selectedSnapshots(): ParagraphSnapshot[] | null {
-      const surface = context.surface.value
-      if (surface === null) return null
-      const editor = context.editor.value
-      if (editor === undefined) return null
-      const snapshot = readParagraphs(editor, context.doc)
-      if (snapshot === null) return null
-      const wanted = new Set(selectedRefs.value.map(refKey))
-      return snapshot.filter((entry) => wanted.has(refKey(entry.ref)))
-    },
+    selectedText,
+    deleteSelected,
+    selectedSnapshots,
   }
+}
+
+/**
+ * 一次事务删除给定段落。
+ *
+ * 用编辑器的文档事务而不是直接删 Y.XmlFragment：前者会同时维护编辑器历史与选区，
+ * 后者会绕过它们。
+ *
+ * 前后各调用一次 `stopCapturing()`，让整批删除成为**独立的一步撤销**——否则它会和
+ * 紧邻的输入粘成同一次撤销，用户按一次撤销会连之前的输入一起回退。用完的仍然是现有
+ * 的协作 UndoManager，不新建第二个历史管理器。
+ */
+export function deleteParagraphs(editor: Editor, chosen: ParagraphSnapshot[]): boolean {
+  const undoState = yUndoPluginKey.getState(editor.state) as
+    | { undoManager: Y.UndoManager }
+    | undefined
+  if (undoState === undefined) throw new Error('协作撤销扩展未就绪')
+
+  const tr = editor.state.tr
+  if (chosen.length === editor.state.doc.childCount) {
+    // 全部删完：同一个事务里留下一个空段落，编辑器始终有可输入的位置。
+    tr.replaceWith(0, tr.doc.content.size, editor.schema.nodes.paragraph!.create())
+  } else {
+    // 从后往前删，前面的位置才不会被后面的删除改动。
+    for (const entry of [...chosen].reverse()) tr.delete(entry.from, entry.to)
+  }
+  const anchor = Math.min(chosen[0]!.from, tr.doc.content.size)
+  tr.setSelection(Selection.near(tr.doc.resolve(anchor)))
+
+  undoState.undoManager.stopCapturing()
+  try {
+    editor.view.dispatch(tr.scrollIntoView())
+  } finally {
+    undoState.undoManager.stopCapturing()
+  }
+  return true
 }
