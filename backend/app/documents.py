@@ -79,8 +79,13 @@ class SqliteDocumentDirectory:
         return connection
 
     def _initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = self._connect()
+        # 建目录、建连接、建表任意一步失败都要转成目录不可用：
+        # 调用方只需要区分「目录能用」和「目录不能用」两种情况。
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = self._connect()
+        except sqlite3.Error as error:
+            raise DirectoryUnavailable(str(error)) from error
         try:
             connection.executescript(SCHEMA)
         except sqlite3.Error as error:

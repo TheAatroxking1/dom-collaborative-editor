@@ -67,13 +67,21 @@ async def read_document_state(database_path: Path, document_id: str) -> Doc:
     """用官方 store 直接读取某个文档的状态。
 
     这是验证手段：证明正文确实落在数据库里，而不是靠内存或客户端补传。
+    任何失败都归为存储不可用——调用方只需要知道「读得到」还是「读不到」。
     """
+    database_path = Path(database_path)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
     store = store_class_for(database_path)(path=document_id)
-    async with store:
-        document = Doc()
-        if not await _apply_store_state(document, store):
-            raise StorageUnavailable(f"存储中没有 {document_id} 的内容")
-        return document
+    try:
+        async with store:
+            document = Doc()
+            if not await _apply_store_state(document, store):
+                raise StorageUnavailable(f"存储中没有 {document_id} 的内容")
+            return document
+    except StorageUnavailable:
+        raise
+    except Exception as error:  # noqa: BLE001 - 统一转成存储不可用
+        raise StorageUnavailable(str(error)) from error
 
 
 class Collaboration:
@@ -102,6 +110,8 @@ class Collaboration:
     # --- 生命周期 ---------------------------------------------------------
 
     async def start(self) -> None:
+        # store 只负责文件本身，不会创建父目录，这里在启动时确保数据目录存在。
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
         await self._server.__aenter__()
         self._started = True
 
