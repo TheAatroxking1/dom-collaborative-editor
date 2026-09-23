@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { ApiUnavailableError, createDocument, readDocument } from './documents/api'
 import { openDocumentSession, type DocumentSession } from './documents/session'
 import EditorPane from './editor/EditorPane.vue'
+import { offlineState } from './offline'
 
 /** 使用 hash 路由，因此不需要服务端为任意前端路径提供回退。 */
 const ROUTE_PREFIX = '#/documents/'
@@ -187,11 +188,32 @@ function retry(): void {
 
 <template>
   <main class="app">
+    <!--
+      版本提示放在最外层：编辑过程中也要看得见。
+      刻意不提供「立即更新」按钮——自动刷新会打断正在写的人，也会让页面状态与
+      本地内容的关系变得难以解释。用户自己决定什么时候关闭全部页面重开。
+    -->
+    <p v-if="offlineState.updateAvailable.value" class="notice-text" role="status">
+      新版本已准备好。结束编辑后，关闭本应用的所有页面再重新打开即可更新；
+      需要保留一份副本时可先导出备份。
+    </p>
+
     <template v-if="documentId === null">
       <section class="home" aria-labelledby="home-title">
         <h1 id="home-title">协作文档编辑器</h1>
         <p class="home-hint">
           创建文档后把链接发给另一个人，两个浏览器就能在同一段文字里一起编辑。
+        </p>
+        <!--
+          只描述「页面资源已缓存」。正文能否离线恢复取决于当前浏览器在当前地址
+          下是否打开过该文档并写入过本地缓存，这是另一件事，不合并成一句承诺。
+        -->
+        <p v-if="offlineState.pageCacheReady.value" class="info-text">
+          页面资源已缓存，断网后仍可打开本页面。已经在本地址打开过的文档，断网后也能继续查看和编辑；
+          首次访问需要联网，浏览器清除站点数据后需要重新缓存。
+        </p>
+        <p v-else-if="offlineState.offlineUnavailableReason.value !== null" class="info-text">
+          {{ offlineState.offlineUnavailableReason.value }}
         </p>
         <div class="home-actions">
           <button type="button" class="primary-button" @click="newDocument">新建文档</button>

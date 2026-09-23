@@ -228,3 +228,14 @@ h1 {
 .debug-detail {
   word-break: break-all;
 }
+
+/* 页面缓存与版本提示：只说明页面资源状态，不表示正文已保存到服务器。 */
+.notice-text {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text);
+}

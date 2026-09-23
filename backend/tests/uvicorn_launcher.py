@@ -38,8 +38,12 @@ def main() -> None:
     data_directory = Path(os.environ["COLLAB_DATA_DIR"])
     port = int(os.environ.get("COLLAB_PORT", "8791"))
 
+    # 可选：把构建好的页面资源也交给同一个进程提供。未设置时行为不变，
+    # 仍是纯 API/WS 服务。
+    static_directory = os.environ.get("COLLAB_STATIC_DIR") or None
+
     config = uvicorn.Config(
-        create_app(data_directory),
+        create_app(data_directory, static_directory=static_directory),
         host="127.0.0.1",
         port=port,
         log_level="warning",

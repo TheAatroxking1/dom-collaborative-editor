@@ -85,4 +85,26 @@ test.describe('文档切换', () => {
     await expect(first.getByRole('button', { name: '新建文档' })).toBeVisible()
     await expect(first.getByRole('textbox', { name: '文档正文' })).toHaveCount(0)
   })
+
+  test('开发模式不注册 Service Worker', async ({ first, openDocument }) => {
+    // 生产构建会注册页面外壳缓存；开发模式必须不注册，否则已安装的生产 SW
+    // 会接管开发页面，改代码后看到的还是旧产物。
+    await openDocument(first)
+
+    const registration = await first.evaluate(async () => {
+      if (!('serviceWorker' in navigator)) return 'unsupported'
+      const found = await navigator.serviceWorker.getRegistration()
+      return found ? 'registered' : 'none'
+    })
+    expect(registration).not.toBe('registered')
+    expect(await first.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(false)
+  })
+
+  test('开发模式说明离线页面缓存只在构建版启用', async ({ first }) => {
+    await first.goto('/')
+
+    // 不显示「已缓存」，而是给出准确原因，避免把开发模式误当成能力缺失。
+    await expect(first.getByText('页面资源已缓存')).toHaveCount(0)
+    await expect(first.getByText(/离线页面缓存只在构建版启用/)).toBeVisible()
+  })
 })
