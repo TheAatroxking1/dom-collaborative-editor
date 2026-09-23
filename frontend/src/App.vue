@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 
+import { tryCopyText } from './clipboard'
 import { ApiUnavailableError, createDocument, readDocument } from './documents/api'
 import DocumentBackup from './documents/DocumentBackup.vue'
 import { openDocumentSession, type DocumentSession } from './documents/session'
@@ -18,6 +19,10 @@ const opening = ref(false)
 const routeError = ref<string | null>(null)
 const linkInput = ref('')
 const linkError = ref<string | null>(null)
+
+/** 协作链接的复制反馈：成功、失败，以及失败时要显示的完整链接。 */
+const linkCopyState = ref<'idle' | 'copied' | 'failed'>('idle')
+const manualLink = ref<string | null>(null)
 
 /**
  * 打开代次：路由每次变化都会递增。
@@ -52,6 +57,12 @@ const statusText = computed(() => session.value?.error.value ?? routeError.value
 const canMount = computed(
   () => session.value !== null && session.value.canMountEditor.value,
 )
+
+// 链接变了就重置旧反馈，避免把上一个文档的复制结果挂在新文档上。
+watch(shareLink, () => {
+  linkCopyState.value = 'idle'
+  manualLink.value = null
+})
 
 function routeFromHash(): string | null {
   const hash = window.location.hash
@@ -174,11 +185,16 @@ function openDocument(id: string): void {
 }
 
 async function copyLink(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(shareLink.value)
-  } catch {
-    linkError.value = `无法访问剪贴板，请手动复制：${shareLink.value}`
+  const copied = await tryCopyText(shareLink.value)
+  if (copied) {
+    linkCopyState.value = 'copied'
+    manualLink.value = null
+    return
   }
+  // HTTP 局域网或权限被拒绝：就地给出可手动复制的完整链接。
+  // 这条反馈必须留在文档页——之前它写进了只在首页显示的变量，文档页看不到失败。
+  linkCopyState.value = 'failed'
+  manualLink.value = shareLink.value
 }
 
 function retry(): void {
@@ -250,6 +266,18 @@ function retry(): void {
           <button type="button" class="toolbar-button" @click="copyLink">复制协作链接</button>
         </div>
       </header>
+
+      <!-- 复制反馈留在文档页：局域网 HTTP 下这里必须能看到可手动复制的链接。 -->
+      <p v-if="linkCopyState === 'copied'" class="info-text">协作链接已复制</p>
+      <template v-else-if="linkCopyState === 'failed'">
+        <p class="error-text" role="alert">请选中下方链接手动复制</p>
+        <input
+          class="text-input manual-link"
+          aria-label="可手动复制的协作链接"
+          readonly
+          :value="manualLink ?? ''"
+        />
+      </template>
 
       <p class="connection-status" role="status" aria-live="polite">{{ connectionText }}</p>
 

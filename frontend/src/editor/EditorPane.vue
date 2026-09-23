@@ -5,6 +5,7 @@ import { TextSelection } from '@tiptap/pm/state'
 import { onBeforeUnmount, ref } from 'vue'
 import type * as Y from 'yjs'
 
+import { tryCopyText } from '../clipboard'
 import { editorExtensions } from './extensions'
 
 const props = defineProps<{
@@ -147,15 +148,14 @@ function plainText(): string {
 
 async function copyBody(): Promise<void> {
   const value = plainText()
-  try {
-    await navigator.clipboard.writeText(value)
+  if (await tryCopyText(value)) {
     copyState.value = 'copied'
     copyFallback.value = null
-  } catch {
-    // 剪贴板不可用时提供可手动选择的文本，而不是假装已经复制。
-    copyState.value = 'failed'
-    copyFallback.value = value
+    return
   }
+  // 剪贴板不可用时提供可手动选择的文本，而不是假装已经复制。
+  copyState.value = 'failed'
+  copyFallback.value = value
 }
 </script>
 
