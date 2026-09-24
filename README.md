@@ -31,9 +31,9 @@
 
 1. 在 [GitHub 仓库](https://github.com/TheAatroxking1/dom-collaborative-editor) 点击 **Code → Download ZIP**，将 ZIP **完整解压**到一个可写目录；不要在压缩包内直接运行。
 2. 双击根目录的 **`install.bat`**，保持联网并等到安装与构建完成。缺少 Python 时，会调用官方 Python Install Manager 安装流程；若系统要求确认安装，请允许。
-3. 双击 **`start.bat`**，然后打开 **<http://127.0.0.1:5274>**。
+3. 双击 **`start.bat`**；服务就绪后会自动打开局域网页面。若终端列出多个网卡地址，先输入双方设备可访问的地址编号并回车。
 
-默认也接受局域网设备连接。创建文档后点击「复制协作链接」，可分享给同一可互通网络里的另一台电脑；有多个地址时，选择双方能访问的网卡地址。对方只需要浏览器。详细条件见[局域网运行](#局域网运行)。
+创建文档后点击「复制协作链接」，可分享给同一可互通网络里的另一台电脑，对方只需要浏览器。没有检测到私网 IPv4 时，终端会明确提示并回退到本机地址 `127.0.0.1`；该地址不能供另一台电脑访问。详细条件见[局域网运行](#局域网运行)。
 
 安装脚本会复用现有的 Node.js 24 和 Python 3.12。缺少合适的 Node.js 时，从 [Node.js 官方发布目录](https://nodejs.org/dist/)下载 24.x ZIP，核对官方 SHA-256 清单后解压到项目的 `.tools`；缺少 Python 3.12 时，通过[官方 Python Install Manager](https://docs.python.org/3/using/windows.html#advanced-installation)安装。Python Manager 及其管理的 Python 属于当前 Windows 用户，项目依赖则装入 `backend/.venv` 和 `frontend/node_modules`。脚本不永久修改系统 PATH。
 
@@ -43,8 +43,10 @@
 
 ```powershell
 .\install.bat --no-pause
-.\start.bat --no-pause -Port 5274
+.\start.bat --no-pause -NoBrowser -Port 5274
 ```
+
+`-NoBrowser` 禁止自动打开浏览器和交互选择，只在终端显示候选访问地址；适合自动化。也可用 `-BrowserHost 192.168.1.100` 指定打开的服务电脑 IP，替换成实际地址。两者不能同时使用。
 
 已在 Windows PowerShell 5.1 下验证全新项目目录的依赖安装与构建、Node.js 官方 ZIP 下载校验、重复安装保留数据及 BAT 启动；当前尚未在全新 Windows 真机上完成从零安装所有工具的全流程验收。受管理的电脑若禁止 MSIX 安装，可使用下方手动路线并按单位规定安装工具。
 
@@ -110,7 +112,7 @@ npm --prefix frontend run build
 powershell.exe -NoProfile -File scripts/serve.ps1
 ```
 
-打开 **<http://127.0.0.1:5274>**。一个 Python 进程同时提供网页、HTTP API 和 WebSocket。终端保持运行，按 **Ctrl+C** 正常停止，留意终端是否出现停机或保存错误。
+服务就绪后自动打开局域网页面；若有多个候选地址，先在终端输入编号。一个 Python 进程同时提供网页、HTTP API 和 WebSocket。终端保持运行，按 **Ctrl+C** 正常停止，留意终端是否出现停机或保存错误。
 
 **如果此前使用 `pwsh -File scripts/serve.ps1` 提示“无法识别 pwsh”**，只需换成上面的 `powershell.exe` 命令，不用重新安装依赖或构建。`pwsh` 是另外安装的 PowerShell 7 的命令名；本项目的脚本兼容 Windows 自带的 PowerShell 5.1。已安装 PowerShell 7 时，原 `pwsh` 命令仍可使用。
 
@@ -141,7 +143,7 @@ npm --prefix frontend run build
 sh scripts/serve.sh
 ```
 
-打开 **<http://127.0.0.1:5274>**。默认也接受局域网设备连接，分享方式见下方[局域网运行](#局域网运行)。终端保持运行，按 **Control+C** 正常停止。后续启动只需要最后一条命令；更新源码时先停止服务，重新构建前端并重启服务。
+服务就绪后自动打开局域网页面；若有多个候选地址，先在终端输入编号。分享方式见下方[局域网运行](#局域网运行)。终端保持运行，按 **Control+C** 正常停止。后续启动只需要最后一条命令；更新源码时先停止服务，重新构建前端并重启服务。无人值守时使用 `sh scripts/serve.sh --no-browser`；指定打开的 IP 可用 `--browser-host 192.168.1.100`，两者不能同时使用。
 
 Mac 虚拟环境中的 Python 位于 `backend/.venv/bin/python`，Windows 则是 `backend/.venv/Scripts/python.exe`。请分别克隆并安装依赖，不要把 Windows 的 `.venv` 或 `node_modules` 复制到 Mac。使用 `sh scripts/serve.sh` 不需要额外执行 `chmod`。
 
@@ -167,7 +169,9 @@ Mac 虚拟环境中的 Python 位于 `backend/.venv/bin/python`，Windows 则是
 
 ## 局域网运行
 
-只有提供服务的电脑需要安装项目。Windows 的 `start.bat` / `scripts/serve.ps1`、macOS 的 `scripts/serve.sh` 默认监听 **`0.0.0.0:5274`**，开发前端默认监听 **`0.0.0.0:5273`**。`0.0.0.0` 表示接受各网卡的连接，不是能发给别人的访问地址；服务电脑本机仍可打开 `http://127.0.0.1:5274`。
+只有提供服务的电脑需要安装项目。Windows 的 `start.bat` / `scripts/serve.ps1`、macOS 的 `scripts/serve.sh` 默认监听 **`0.0.0.0:5274`**，服务就绪后打开检测到的局域网 IP；只有一个候选地址时自动使用，多个地址时先在终端选择编号。没有候选地址时明确提示并回退 `127.0.0.1`。开发前端仍默认监听 **`0.0.0.0:5273`**，不使用构建版的自动打开流程。`0.0.0.0` 表示接受各网卡的连接，不是浏览器访问地址。
+
+自动化或没有可输入终端时，使用 Windows 的 `-NoBrowser` / Mac 的 `--no-browser`，只显示候选地址而不选择、不打开；也可以用 `-BrowserHost 实际IP` / `--browser-host 实际IP` 指定浏览器地址。两组参数互斥，指定浏览器地址不会改变服务监听范围。
 
 在文档中点击「复制协作链接」：
 
@@ -200,7 +204,9 @@ sh scripts/serve.sh --host 127.0.0.1 --port 5274
 | 局域网 HTTP 构建版 | 支持 | 支持 | 不保证，通常无法重新加载页面 |
 | 局域网可信 HTTPS 构建版 | 支持 | 支持 | 页面资源与该文档已缓存后可用 |
 
-可信 HTTPS 的证书必须覆盖分享时选用的 IP 或域名，并被访问设备信任。配置、排障和换地址迁移见 [本地与局域网指南](docs/local-and-lan.md)。不要在编辑过程中随意更换协议、主机名或端口：浏览器按地址来源隔离本地数据，未同步内容应先导出备份。更新到此分享功能后，需要重新构建前端并重启服务；有旧页面缓存时，结束编辑后关闭全部页面再重新打开。
+**默认打开的 HTTP 局域网地址不是安全上下文，不能进行整站离线刷新。** 要使用该功能，需配置可信 HTTPS，证书覆盖打开或分享时选用的 IP / 域名，并被访问设备信任。配置、排障和换地址迁移见 [本地与局域网指南](docs/local-and-lan.md)。
+
+如果以前在 `http://127.0.0.1:5274` 或 `localhost` 下编辑过，切换到默认局域网地址前，先回到原地址让未同步内容完成同步，或导出备份；不同地址的浏览器本地缓存互不共享。更新功能后需要重新构建前端并重启服务；有旧页面缓存时，结束编辑后关闭全部页面再重新打开。
 
 ## 开发模式（5273）
 
@@ -276,7 +282,7 @@ flowchart LR
 | [frontend/src/editor/presence.ts](frontend/src/editor/presence.ts) | 访客身份与远端鼠标 |
 | [frontend/src/editor/paragraphSelection.ts](frontend/src/editor/paragraphSelection.ts) | 留白拖动、整段高亮、批量复制与删除 |
 
-其他辅助代码：`frontend/src/documents/backup.ts` 与 `DocumentBackup.vue` 处理备份；`frontend/src/offline.ts` 处理页面资源缓存；`frontend/src/clipboard.ts` 处理剪贴板结果。测试放在 `backend/tests`、`frontend/tests`、`frontend/e2e` 与 `frontend/e2e-production`。
+其他辅助代码：`frontend/src/documents/backup.ts` 与 `DocumentBackup.vue` 处理备份；`frontend/src/offline.ts` 处理页面资源缓存；`frontend/src/clipboard.ts` 处理剪贴板结果。`backend/serve.py` 是 Windows/macOS 共用的启动入口，复用 `backend/app/share.py` 检测局域网地址，并在服务就绪后打开浏览器。测试放在 `backend/tests`、`frontend/tests`、`frontend/e2e` 与 `frontend/e2e-production`。
 
 ## 配置
 

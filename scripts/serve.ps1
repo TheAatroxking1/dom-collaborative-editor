@@ -4,11 +4,12 @@
     前台运行构建版：一个进程同时提供页面、API 与 WebSocket。
 
 .DESCRIPTION
-    与 dev.ps1 不同，本脚本在前台直接运行 Uvicorn，Ctrl+C 走 Uvicorn 自己的正常
+    与 dev.ps1 不同，本脚本通过共享 Python 入口在前台运行 Uvicorn，Ctrl+C 走其正常
     停机流程（会触发协作房间写下完整状态）。不使用 Start-Process、不使用
     taskkill、不按端口结束任何进程。
 
-    默认监听 0.0.0.0:5274，本机可访问 127.0.0.1:5274。与开发版的 5273 分开：生产 Service Worker 只
+    默认监听 0.0.0.0:5274，服务就绪后打开局域网页面；多网卡时先选择地址。
+    与开发版的 5273 分开：生产 Service Worker 只
     作用于它自己的 origin，两个模式用不同端口可以避免它接管开发页面。
 
     提供 CertFile/KeyFile 时启用 TLS。局域网内完整离线刷新需要可信 HTTPS；
@@ -28,7 +29,9 @@ param(
     [string]$HostAddress = '0.0.0.0',
     [int]$Port = 5274,
     [string]$CertFile = '',
-    [string]$KeyFile = ''
+    [string]$KeyFile = '',
+    [switch]$NoBrowser,
+    [string]$BrowserHost = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,29 +84,19 @@ if ($CertFile -or $KeyFile) {
 $env:COLLAB_STATIC_DIR = (Resolve-Path $staticDirectory).Path
 
 $serverArgs = @(
-    '-m', 'uvicorn', 'app.main:app', '--app-dir', 'backend',
-    '--host', $HostAddress, '--port', "$Port", '--workers', '1',
-    # 停机必须有时限：uvicorn 默认不设上限，会先给每个连接发关闭帧再无限期等待
-    # 它们结束。浏览器被强制关闭时连接可能一直不收敛，Ctrl+C 就会永远停不下来，
-    # 应用写回完整状态的那一步也不会执行。
-    '--timeout-graceful-shutdown', '10'
+    'backend/serve.py', '--host', $HostAddress, '--port', "$Port"
 )
 if ($useTls) {
     $serverArgs += @('--ssl-certfile', $CertFile, '--ssl-keyfile', $KeyFile)
 }
+if ($NoBrowser) {
+    $serverArgs += '--no-browser'
+}
+if ($BrowserHost) {
+    $serverArgs += @('--browser-host', $BrowserHost)
+}
 
-$scheme = if ($useTls) { 'https' } else { 'http' }
-Write-Host "构建版监听：${HostAddress}:$Port" -ForegroundColor Green
-if ($HostAddress -eq '0.0.0.0') {
-    Write-Host "本机打开：${scheme}://127.0.0.1:$Port" -ForegroundColor Green
-    Write-Host '0.0.0.0 是监听地址，不是浏览器访问地址。其他设备请使用页面生成的局域网协作链接。'
-    Write-Host '设备之间需网络互通，防火墙需允许入站连接；脚本不会自动修改防火墙。'
-} else {
-    Write-Host "访问地址：${scheme}://${HostAddress}:$Port" -ForegroundColor Green
-}
-if (-not $useTls -and $HostAddress -ne '127.0.0.1') {
-    Write-Host '当前是 HTTP：可在线协作，但整站断网后刷新需要可信 HTTPS。' -ForegroundColor Yellow
-}
+Write-Host '启动构建版，实际访问地址和浏览器提示见下方输出。' -ForegroundColor Green
 Write-Host '按 Ctrl+C 正常停止（会触发服务端写下完整状态）。' -ForegroundColor DarkGray
 Write-Host ''
 
