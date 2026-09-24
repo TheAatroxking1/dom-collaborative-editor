@@ -18,6 +18,13 @@ import {
  */
 
 const SHARE_LINK_INPUT = '可手动复制的协作链接'
+const LAN_HOST = '192.168.50.10'
+const LAN_ORIGIN = PRODUCTION_ORIGIN.replace('127.0.0.1', LAN_HOST)
+
+// 使用确定的网卡地址，复制行为不依赖运行测试的电脑装了几张虚拟网卡。
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/share-addresses', (route) => route.fulfill({ json: { hosts: [LAN_HOST] } }))
+})
 
 /** 让页面看起来像 HTTP 局域网：安全上下文为 false。 */
 async function simulateInsecureContext(page: import('@playwright/test').Page): Promise<void> {
@@ -68,7 +75,8 @@ test.describe('协作链接复制', () => {
     await expect(page.getByRole('textbox', { name: SHARE_LINK_INPUT })).toHaveCount(0)
 
     const copied = await page.evaluate(() => navigator.clipboard.readText())
-    expect(copied).toBe(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
+    expect(copied).toBe(`${LAN_ORIGIN}/#/documents/${documentId}`)
+    expect(page.url()).toBe(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
   })
 
   test('HTTP 局域网（非安全上下文）显示可手动复制的链接', async ({ server, page }) => {
@@ -81,7 +89,7 @@ test.describe('协作链接复制', () => {
     await expect(page.getByText('请选中下方链接手动复制')).toBeVisible()
     const field = page.getByRole('textbox', { name: SHARE_LINK_INPUT })
     await expect(field).toBeVisible()
-    await expect(field).toHaveValue(`${PRODUCTION_ORIGIN}/#/documents/${documentId}`)
+    await expect(field).toHaveValue(`${LAN_ORIGIN}/#/documents/${documentId}`)
     // 只读但可以选中复制。
     await expect(field).toHaveAttribute('readonly', '')
 
@@ -114,10 +122,11 @@ test.describe('协作链接复制', () => {
     const page = await context.newPage()
     try {
       await simulateInsecureContext(page)
+      await page.route('**/api/share-addresses', (route) => route.fulfill({ json: { hosts: [LAN_HOST] } }))
       const firstId = await openDocument(page, server)
       await page.getByRole('button', { name: '复制协作链接' }).click()
       await expect(page.getByRole('textbox', { name: SHARE_LINK_INPUT })).toHaveValue(
-        `${PRODUCTION_ORIGIN}/#/documents/${firstId}`,
+        `${LAN_ORIGIN}/#/documents/${firstId}`,
       )
 
       const secondId = await server.createDocument()
@@ -133,11 +142,47 @@ test.describe('协作链接复制', () => {
       // 再次复制给出的是新文档的链接。
       await page.getByRole('button', { name: '复制协作链接' }).click()
       await expect(page.getByRole('textbox', { name: SHARE_LINK_INPUT })).toHaveValue(
-        `${PRODUCTION_ORIGIN}/#/documents/${secondId}`,
+        `${LAN_ORIGIN}/#/documents/${secondId}`,
       )
     } finally {
       await context.close()
     }
+  })
+
+  test('多个网卡地址时选择后才复制，不擅自选择虚拟网卡', async ({ server, page }) => {
+    await page.route('**/api/share-addresses', (route) => route.fulfill({ json: { hosts: ['10.0.0.8', LAN_HOST] } }))
+    const id = await openDocument(page, server)
+    const copy = page.getByRole('button', { name: '复制协作链接' })
+    await expect(copy).toBeDisabled()
+    await page.getByRole('combobox', { name: '协作链接地址' }).selectOption(LAN_HOST)
+    await copy.click()
+    await expect(page.getByText('协作链接已复制')).toBeVisible()
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${LAN_ORIGIN}/#/documents/${id}`)
+  })
+
+  test('没有局域网地址时提示原因，不复制无效的本机链接', async ({ server, page }) => {
+    await page.route('**/api/share-addresses', (route) => route.fulfill({ json: { hosts: [] } }))
+    await openDocument(page, server)
+    await expect(page.getByRole('button', { name: '复制协作链接' })).toBeDisabled()
+    await expect(page.getByText(/未检测到局域网 IPv4 地址/)).toBeVisible()
+    await expect(page.getByText('协作链接已复制')).toHaveCount(0)
+  })
+
+  test('地址接口失败后可以重试，正文仍可编辑', async ({ server, page }) => {
+    let attempts = 0
+    await page.route('**/api/share-addresses', (route) => route.fulfill(
+      attempts++ === 0 ? { status: 503, body: 'unavailable' } : { json: { hosts: [LAN_HOST] } },
+    ))
+    const id = await openDocument(page, server)
+    await expect(page.getByText(/无法获取局域网地址/)).toBeVisible()
+    await expect(page.getByRole('button', { name: '复制协作链接' })).toBeDisabled()
+    await focusEditor(page)
+    await page.keyboard.insertText('地址检测失败也能编辑')
+    await expect.poll(() => editorText(page)).toBe('地址检测失败也能编辑')
+    await page.getByRole('button', { name: '重新检测地址' }).click()
+    await page.getByRole('button', { name: '复制协作链接' }).click()
+    await expect(page.getByText('协作链接已复制')).toBeVisible()
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${LAN_ORIGIN}/#/documents/${id}`)
   })
 })
 

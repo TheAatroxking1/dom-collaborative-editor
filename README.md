@@ -33,15 +33,17 @@
 2. 双击根目录的 **`install.bat`**，保持联网并等到安装与构建完成。缺少 Python 时，会调用官方 Python Install Manager 安装流程；若系统要求确认安装，请允许。
 3. 双击 **`start.bat`**，然后打开 **<http://127.0.0.1:5274>**。
 
+默认也接受局域网设备连接。创建文档后点击「复制协作链接」，可分享给同一可互通网络里的另一台电脑；有多个地址时，选择双方能访问的网卡地址。对方只需要浏览器。详细条件见[局域网运行](#局域网运行)。
+
 安装脚本会复用现有的 Node.js 24 和 Python 3.12。缺少合适的 Node.js 时，从 [Node.js 官方发布目录](https://nodejs.org/dist/)下载 24.x ZIP，核对官方 SHA-256 清单后解压到项目的 `.tools`；缺少 Python 3.12 时，通过[官方 Python Install Manager](https://docs.python.org/3/using/windows.html#advanced-installation)安装。Python Manager 及其管理的 Python 属于当前 Windows 用户，项目依赖则装入 `backend/.venv` 和 `frontend/node_modules`。脚本不永久修改系统 PATH。
 
-安装失败时查看根目录 **`install.log`**，修复网络或安装错误后可再次运行 `install.bat`。后续启动只需 `start.bat`；更新项目源码后重新运行 `install.bat` 安装依赖并构建。启动后保持窗口运行，按 **Ctrl+C** 正常停止，留意停机或保存错误。如果随后出现“终止批处理作业 (Y/N)?”，输入 `Y` 结束窗口中的批处理。
+安装失败时查看根目录 **`install.log`**，修复网络或安装错误后可再次运行 `install.bat`。后续启动只需 `start.bat`；更新项目源码时先停止服务，重新运行 `install.bat` 安装依赖并构建，再运行 `start.bat` 使更改生效。启动后保持窗口运行，按 **Ctrl+C** 正常停止，留意停机或保存错误。如果随后出现“终止批处理作业 (Y/N)?”，输入 `Y` 结束窗口中的批处理。
 
 批处理使用 Windows 自带的 PowerShell 5.1；执行策略设置只作用于本次 PowerShell 进程，不修改系统或用户的执行策略。批处理结束后会暂停，避免错误窗口闪退；命令行自动化可将 `--no-pause` 放在第一个参数位置，例如：
 
 ```powershell
 .\install.bat --no-pause
-.\start.bat --no-pause -HostAddress 127.0.0.1 -Port 5274
+.\start.bat --no-pause -Port 5274
 ```
 
 已在 Windows PowerShell 5.1 下验证全新项目目录的依赖安装与构建、Node.js 官方 ZIP 下载校验、重复安装保留数据及 BAT 启动；当前尚未在全新 Windows 真机上完成从零安装所有工具的全流程验收。受管理的电脑若禁止 MSIX 安装，可使用下方手动路线并按单位规定安装工具。
@@ -115,7 +117,7 @@ powershell.exe -NoProfile -File scripts/serve.ps1
 ### 3. 体验双人编辑
 
 1. 点击「新建文档」，输入几行文字。
-2. 点击「复制协作链接」，用另一个浏览器或隐私窗口打开。
+2. 点击「复制协作链接」，用另一个浏览器、隐私窗口或同一可互通网络的另一台电脑打开；若出现多个地址，先选择可访问的网卡地址。
 3. 两边在同一段输入不同内容，观察文字同步和协作者光标。
 4. 在一边选中文字，或者从正文左侧留白拖动选择几段，观察另一边的高亮。
 5. 删除所选段落，再点「撤销」，确认整批恢复。
@@ -139,7 +141,7 @@ npm --prefix frontend run build
 sh scripts/serve.sh
 ```
 
-打开 **<http://127.0.0.1:5274>**。终端保持运行，按 **Control+C** 正常停止。后续启动只需要最后一条命令；更新前端源码后需要重新构建。
+打开 **<http://127.0.0.1:5274>**。默认也接受局域网设备连接，分享方式见下方[局域网运行](#局域网运行)。终端保持运行，按 **Control+C** 正常停止。后续启动只需要最后一条命令；更新源码时先停止服务，重新构建前端并重启服务。
 
 Mac 虚拟环境中的 Python 位于 `backend/.venv/bin/python`，Windows 则是 `backend/.venv/Scripts/python.exe`。请分别克隆并安装依赖，不要把 Windows 的 `.venv` 或 `node_modules` 复制到 Mac。使用 `sh scripts/serve.sh` 不需要额外执行 `chmod`。
 
@@ -165,29 +167,31 @@ Mac 虚拟环境中的 Python 位于 `backend/.venv/bin/python`，Windows 则是
 
 ## 局域网运行
 
-只有提供服务的电脑需要安装项目。完成上面的安装与构建后，在该电脑执行：
+只有提供服务的电脑需要安装项目。Windows 的 `start.bat` / `scripts/serve.ps1`、macOS 的 `scripts/serve.sh` 默认监听 **`0.0.0.0:5274`**，开发前端默认监听 **`0.0.0.0:5273`**。`0.0.0.0` 表示接受各网卡的连接，不是能发给别人的访问地址；服务电脑本机仍可打开 `http://127.0.0.1:5274`。
 
-Windows：
+在文档中点击「复制协作链接」：
+
+- 从 `localhost` / `127.0.0.1` 页面分享时，应用向服务端 `/api/share-addresses` 获取私网 IPv4，用选定的地址生成同一文档的链接；有多个候选地址时，需要选择双方能访问的地址。
+- 如果页面已经通过局域网 IP 或域名打开，分享保留当前协议、主机和端口。
+- 生成链接不会跳转当前页面，也不会改变当前文档的浏览器存储来源。未找到地址或请求失败时，按页面提示检查网络或手动使用已知的服务地址。
+
+例如服务电脑地址为 `192.168.1.100`，另一台设备使用的链接以 `http://192.168.1.100:5274` 开头，并保留当前文档标识。地址不确定时，Windows 用 `ipconfig` 查看当前网卡 IPv4；Mac 在「系统设置 → 网络 → 当前连接的详细信息 → TCP/IP」查看。**不要把含 `127.0.0.1`、`localhost` 或 `0.0.0.0` 的链接发给另一台设备。**
+
+设备需处于可互通的网络，服务电脑保持运行。自动列出地址不保证对方能连接；检查服务电脑的防火墙入站规则、路由器访客隔离、VPN 和端口占用。脚本不会自动修改防火墙。
+
+只想允许本机访问时，显式指定回环地址。Windows：
 
 ```powershell
-powershell.exe -NoProfile -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
+powershell.exe -NoProfile -File scripts/serve.ps1 -HostAddress 127.0.0.1 -Port 5274
 ```
 
 macOS：
 
 ```sh
-sh scripts/serve.sh --host 0.0.0.0 --port 5274
+sh scripts/serve.sh --host 127.0.0.1 --port 5274
 ```
 
-Windows 用 `ipconfig` 查看当前网卡的 IPv4 地址；Mac 可在「系统设置 → 网络 → 当前连接的详细信息 → TCP/IP」查看。假设是 `192.168.1.100`，所有设备统一访问：
-
-```text
-http://192.168.1.100:5274
-```
-
-在这个地址新建文档并分享链接。**不要把包含 `127.0.0.1`、`localhost` 或 `0.0.0.0` 的地址发给另一台设备**；前两者指向访问者自己，后者是监听地址。
-
-设备需处于可互通的网络，服务电脑保持运行；连接失败时检查服务电脑的防火墙入站规则、路由器访客隔离、VPN 和端口占用。
+开发前端仅本机访问可使用 `npm --prefix frontend run dev -- --host 127.0.0.1`。仅监听回环地址时，生成局域网链接也不会让其他设备连进来。
 
 | 使用环境 | 在线协作 | 已打开页面断线后继续编辑 | 整站离线后刷新 |
 | --- | --- | --- | --- |
@@ -196,7 +200,7 @@ http://192.168.1.100:5274
 | 局域网 HTTP 构建版 | 支持 | 支持 | 不保证，通常无法重新加载页面 |
 | 局域网可信 HTTPS 构建版 | 支持 | 支持 | 页面资源与该文档已缓存后可用 |
 
-可信 HTTPS 配置、排障和换地址迁移见 [本地与局域网指南](docs/local-and-lan.md)。不要在编辑过程中随意更换协议、主机名或端口：浏览器按地址来源隔离本地数据，未同步内容应先导出备份。
+可信 HTTPS 的证书必须覆盖分享时选用的 IP 或域名，并被访问设备信任。配置、排障和换地址迁移见 [本地与局域网指南](docs/local-and-lan.md)。不要在编辑过程中随意更换协议、主机名或端口：浏览器按地址来源隔离本地数据，未同步内容应先导出备份。更新到此分享功能后，需要重新构建前端并重启服务；有旧页面缓存时，结束编辑后关闭全部页面再重新打开。
 
 ## 开发模式（5273）
 
@@ -220,7 +224,7 @@ backend/.venv/bin/python -m uvicorn app.main:app --app-dir backend --host 127.0.
 npm --prefix frontend run dev
 ```
 
-打开 **<http://127.0.0.1:5273>**。前端开发服务器代理 API / WebSocket 到 8787。分别在各自终端按 Ctrl+C 停止。
+打开 **<http://127.0.0.1:5273>**。前端默认监听所有 IPv4 网卡，可通过局域网地址访问；API / WebSocket 由 Vite 代理到仅监听本机的 8787，其他设备不需要直连后端端口。分别在各自终端按 Ctrl+C 停止。
 
 Windows 也可以用 `powershell.exe -NoProfile -File scripts/dev.ps1` 一键启动，但该脚本退出时会强制结束自己启动的子进程，不能用于验证正常停机保存。
 

@@ -8,7 +8,7 @@
     停机流程（会触发协作房间写下完整状态）。不使用 Start-Process、不使用
     taskkill、不按端口结束任何进程。
 
-    默认 127.0.0.1:5274，与开发版的 5273 分开：已安装的生产 Service Worker 只
+    默认监听 0.0.0.0:5274，本机可访问 127.0.0.1:5274。与开发版的 5273 分开：生产 Service Worker 只
     作用于它自己的 origin，两个模式用不同端口可以避免它接管开发页面。
 
     提供 CertFile/KeyFile 时启用 TLS。局域网内完整离线刷新需要可信 HTTPS；
@@ -25,7 +25,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$HostAddress = '127.0.0.1',
+    [string]$HostAddress = '0.0.0.0',
     [int]$Port = 5274,
     [string]$CertFile = '',
     [string]$KeyFile = ''
@@ -93,7 +93,14 @@ if ($useTls) {
 }
 
 $scheme = if ($useTls) { 'https' } else { 'http' }
-Write-Host "构建版启动：${scheme}://${HostAddress}:$Port" -ForegroundColor Green
+Write-Host "构建版监听：${HostAddress}:$Port" -ForegroundColor Green
+if ($HostAddress -eq '0.0.0.0') {
+    Write-Host "本机打开：${scheme}://127.0.0.1:$Port" -ForegroundColor Green
+    Write-Host '0.0.0.0 是监听地址，不是浏览器访问地址。其他设备请使用页面生成的局域网协作链接。'
+    Write-Host '设备之间需网络互通，防火墙需允许入站连接；脚本不会自动修改防火墙。'
+} else {
+    Write-Host "访问地址：${scheme}://${HostAddress}:$Port" -ForegroundColor Green
+}
 if (-not $useTls -and $HostAddress -ne '127.0.0.1') {
     Write-Host '当前是 HTTP：可在线协作，但整站断网后刷新需要可信 HTTPS。' -ForegroundColor Yellow
 }

@@ -1,6 +1,6 @@
 """FastAPI 应用工厂：文档接口、标准 Yjs WebSocket 入口，以及可选的静态页面服务。
 
-FastAPI 在这里只承担四件事：文档目录接口、WebSocket 前的存在性校验、把连接交给库
+FastAPI 在这里提供文档目录与本机分享地址接口、WebSocket 前的存在性校验、把连接交给库
 处理，以及在显式配置时把构建好的前端资源一并提供出去。协议、合并、广播与持久化都
 不在本文件内实现。
 
@@ -26,6 +26,7 @@ from .documents import (
     SqliteDocumentDirectory,
     new_document_id,
 )
+from .share import lan_ipv4_hosts
 
 DEFAULT_DATA_DIRECTORY = "backend/data/v2"
 DIRECTORY_FILENAME = "documents.sqlite3"
@@ -86,6 +87,13 @@ def create_app(
     def health() -> dict[str, str]:
         # 只说明进程存活，不声称所有文档的存储都健康。
         return {"status": "ok"}
+
+    @app.get("/api/share-addresses")
+    def share_addresses(request: Request) -> JSONResponse:
+        # 采用 ASGI 的本地 socket 地址，不能把客户端的 Host 头当成本机地址。
+        server = request.scope.get("server")
+        hosts = lan_ipv4_hosts(server[0] if server else None)
+        return JSONResponse(content={"hosts": hosts}, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/documents", status_code=201)
     async def create_document(request: Request) -> JSONResponse:

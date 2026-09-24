@@ -7,6 +7,7 @@ import DocumentBackup from './documents/DocumentBackup.vue'
 import { openDocumentSession, type DocumentSession } from './documents/session'
 import EditorPane from './editor/EditorPane.vue'
 import { offlineState } from './offline'
+import { createShareLink, isLocalHostname, readShareHosts } from './shareLink'
 
 /** 使用 hash 路由，因此不需要服务端为任意前端路径提供回退。 */
 const ROUTE_PREFIX = '#/documents/'
@@ -23,6 +24,12 @@ const linkError = ref<string | null>(null)
 /** 协作链接的复制反馈：成功、失败，以及失败时要显示的完整链接。 */
 const linkCopyState = ref<'idle' | 'copied' | 'failed'>('idle')
 const manualLink = ref<string | null>(null)
+const usesLocalAddress = isLocalHostname(window.location.hostname)
+const shareHosts = ref<string[]>([])
+const selectedShareHost = ref('')
+const loadingShareHosts = ref(false)
+const shareAddressError = ref<string | null>(null)
+let shareGeneration = 0
 
 /**
  * 打开代次：路由每次变化都会递增。
@@ -35,8 +42,32 @@ let openGeneration = 0
 const shareLink = computed(() =>
   documentId.value === null
     ? ''
-    : `${window.location.origin}${window.location.pathname}${ROUTE_PREFIX}${documentId.value}`,
+    : createShareLink(window.location.href, documentId.value, selectedShareHost.value),
 )
+
+async function detectShareHosts(): Promise<void> {
+  if (!usesLocalAddress) return
+  const generation = ++shareGeneration
+  loadingShareHosts.value = true
+  shareAddressError.value = null
+  try {
+    const hosts = await readShareHosts()
+    if (generation !== shareGeneration) return
+    shareHosts.value = hosts
+    selectedShareHost.value = hosts.includes(selectedShareHost.value)
+      ? selectedShareHost.value : hosts.length === 1 ? hosts[0] : ''
+    if (hosts.length === 0) {
+      shareAddressError.value = '未检测到局域网 IPv4 地址。请连接 Wi-Fi 或网线后重新检测，或通过服务电脑的局域网网址打开页面。'
+    }
+  } catch {
+    if (generation !== shareGeneration) return
+    shareHosts.value = []
+    selectedShareHost.value = ''
+    shareAddressError.value = '无法获取局域网地址。请确认服务已启动，再重新检测；正文仍可继续编辑。'
+  } finally {
+    if (generation === shareGeneration) loadingShareHosts.value = false
+  }
+}
 
 const connectionText = computed((): string => {
   if (opening.value) return '正在打开…'
@@ -144,10 +175,12 @@ async function applyRoute(): Promise<void> {
 
 onMounted(() => {
   window.addEventListener('hashchange', () => void applyRoute())
+  void detectShareHosts()
   void applyRoute()
 })
 
 onBeforeUnmount(() => {
+  shareGeneration += 1
   window.removeEventListener('hashchange', () => void applyRoute())
   openGeneration += 1
   const current = session.value
@@ -185,7 +218,11 @@ function openDocument(id: string): void {
 }
 
 async function copyLink(): Promise<void> {
-  const copied = await tryCopyText(shareLink.value)
+  const link = shareLink.value
+  if (!link || loadingShareHosts.value) return
+  // 地址已在页面加载时取得，点击中直接调用剪贴板，保留浏览器的用户手势。
+  const copied = await tryCopyText(link)
+  if (shareLink.value !== link) return
   if (copied) {
     linkCopyState.value = 'copied'
     manualLink.value = null
@@ -194,7 +231,7 @@ async function copyLink(): Promise<void> {
   // HTTP 局域网或权限被拒绝：就地给出可手动复制的完整链接。
   // 这条反馈必须留在文档页——之前它写进了只在首页显示的变量，文档页看不到失败。
   linkCopyState.value = 'failed'
-  manualLink.value = shareLink.value
+  manualLink.value = link
 }
 
 function retry(): void {
@@ -263,9 +300,23 @@ function retry(): void {
           <code class="document-id">{{ documentId }}</code>
         </div>
         <div class="document-actions">
-          <button type="button" class="toolbar-button" @click="copyLink">复制协作链接</button>
+          <button type="button" class="toolbar-button" :disabled="!shareLink || loadingShareHosts" @click="copyLink">复制协作链接</button>
         </div>
       </header>
+
+      <div v-if="usesLocalAddress">
+        <p v-if="loadingShareHosts" class="info-text">正在检测局域网地址…</p>
+        <template v-else-if="shareHosts.length > 1">
+          <label class="field-label" for="share-host">协作链接地址</label>
+          <select id="share-host" v-model="selectedShareHost" class="text-input">
+            <option disabled value="">请选择与另一台设备相通的局域网地址</option>
+            <option v-for="host in shareHosts" :key="host" :value="host">{{ host }}</option>
+          </select>
+        </template>
+        <p v-else-if="selectedShareHost" class="info-text">协作链接将使用局域网地址 {{ selectedShareHost }}</p>
+        <p v-if="shareAddressError" class="error-text" role="alert">{{ shareAddressError }}</p>
+        <button type="button" class="toolbar-button" :disabled="loadingShareHosts" @click="detectShareHosts">重新检测地址</button>
+      </div>
 
       <!-- 复制反馈留在文档页：局域网 HTTP 下这里必须能看到可手动复制的链接。 -->
       <p v-if="linkCopyState === 'copied'" class="info-text">协作链接已复制</p>
