@@ -31,9 +31,28 @@
 | --- | --- | --- |
 | Git | 克隆仓库 | [Git 官网](https://git-scm.com/install/windows) |
 | Node.js 24.x（含 npm） | 构建前端 | [Node.js 官网](https://nodejs.org/en/download)，选择 24.x |
-| Python 3.12 | 运行后端 | [Python 官网](https://www.python.org/downloads/)，选择 3.12 系列并安装 Python Launcher |
+| Python 3.12 | 运行后端 | [Python 官方安装器](https://www.python.org/downloads/windows/)，安装步骤见下方 |
 
-先确认环境，以下四条命令都应显示版本：
+### 0. 安装 Python 并检查环境
+
+如果 `py -3.12 --version` 已能显示 `Python 3.12.x`，跳过安装。尚未安装 Python 的 Windows 10/11 电脑，先在 PowerShell 执行以下命令安装 **Python Install Manager**（此时不需要进入项目目录）：
+
+```powershell
+winget install 9NQ7512CXL7T -e
+```
+
+如果 `winget` 无法识别或商店安装失败，打开 [Python 官方安装器页面](https://www.python.org/downloads/release/pymanager-263/)，点击 **Download Installer (MSIX)**，下载后双击安装即可。
+
+安装器完成后，**关闭原来的 PowerShell，重新打开**，再安装本项目需要的 Python 3.12 并确认版本：
+
+```powershell
+py install 3.12
+py -3.12 --version
+```
+
+应显示 `Python 3.12.x`；只安装管理器还不等于已安装项目要求的 3.12。若电脑已有旧版 Python Launcher，导致 `py install` 不被识别，可改用 `pymanager install 3.12`。命令与安装器说明见 [Python 官方 Windows 指南](https://docs.python.org/3/using/windows.html#installing-runtimes)。
+
+然后确认其余环境，以下四条命令都应显示版本；某一步报错时先解决该错误，再继续安装项目依赖：
 
 ```powershell
 git --version
