@@ -28,8 +28,8 @@ $python = Join-Path $root 'backend\.venv\Scripts\python.exe'
 
 if (-not (Test-Path $python)) {
     Write-Host '未找到后端虚拟环境，请先执行：' -ForegroundColor Yellow
-    Write-Host '  uv venv --python 3.12 backend/.venv'
-    Write-Host '  uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock'
+    Write-Host '  py -3.12 -m venv backend/.venv'
+    Write-Host '  .\backend\.venv\Scripts\python.exe -m pip install --require-hashes -r backend/requirements.lock'
     Write-Host '  npm --prefix frontend ci'
     exit 1
 }

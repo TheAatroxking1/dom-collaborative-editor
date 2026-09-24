@@ -6,6 +6,7 @@
 | --- | --- |
 | [项目 README](../README.md) | 安装、启动、功能、核心代码、测试和当前限制 |
 | [本地与局域网指南](local-and-lan.md) | 局域网 HTTP / HTTPS、排障、数据备份与换地址迁移 |
+| [macOS 运行指南](macos.md) | Mac 工具准备、首次启动、局域网、开发与测试 |
 | [演示步骤](demo.md) | 双端协作、整段操作、断线恢复的演示顺序 |
 | [中文输入法检查表](manual-ime-checklist.md) | 需要真实系统输入法执行的人工验收 |
 | [离线与局域网验收记录](offline-lan-validation.md) | 当时实际验证过的环境与未验证边界 |

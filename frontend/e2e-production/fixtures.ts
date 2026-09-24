@@ -25,7 +25,9 @@ import { test as base, expect, type BrowserContext, type Page } from '@playwrigh
 
 const frontendDirectory = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const backendDirectory = resolve(frontendDirectory, '../backend')
-const pythonExecutable = join(backendDirectory, '.venv', 'Scripts', 'python.exe')
+const pythonExecutable = process.platform === 'win32'
+  ? join(backendDirectory, '.venv', 'Scripts', 'python.exe')
+  : join(backendDirectory, '.venv', 'bin', 'python')
 const builtDirectory = join(frontendDirectory, 'dist')
 
 export const PRODUCTION_PORT = Number(process.env.COLLAB_E2E_PRODUCTION_PORT ?? 5483)

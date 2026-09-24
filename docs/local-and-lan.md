@@ -2,6 +2,8 @@
 
 这份文档说明三件事：本机怎么跑、局域网里怎么给别人用、以及换地址后怎么把本地内容搬过去。
 
+本文命令使用 Windows PowerShell；Mac 用户请使用 [macOS 运行指南](macos.md)。地址、数据备份与迁移规则在两种系统上相同。
+
 **先记住两个端口，不要混用：**
 
 | 模式 | 前端地址 | 用途 |
@@ -22,19 +24,19 @@
 ### 安装
 
 ```powershell
-uv venv --python 3.12 backend/.venv
+py -3.12 -m venv backend/.venv
 ```
 
 ```powershell
-uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock
+.\backend\.venv\Scripts\python.exe -m pip install --require-hashes -r backend/requirements.lock
 ```
 
 ```powershell
 npm --prefix frontend ci
 ```
 
-以下示例在 Windows 自带的 PowerShell 5.1 或 PowerShell 7 中执行，启动命令使用系统自带的 `powershell.exe`，建议 Python 3.12、Node 24.x、uv。
-所有命令从仓库根目录运行；其他系统需要调整虚拟环境可执行文件路径，本文未将其标为已验收。
+以下示例在 Windows 自带的 PowerShell 5.1 或 PowerShell 7 中执行，启动命令使用系统自带的 `powershell.exe`，需要 Git、Python 3.12 和 Node 24.x。安装来源与版本检查见 [README](../README.md#快速开始windows)，不要求安装 uv。
+所有命令从仓库根目录运行；macOS 的启动命令和未实测范围在上述专用指南中说明。
 
 ### 开发模式
 

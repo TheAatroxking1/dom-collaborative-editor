@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test'
 
 const backendDirectory = resolve(fileURLToPath(new URL('../../backend', import.meta.url)))
-const pythonExecutable = join(backendDirectory, '.venv', 'Scripts', 'python.exe')
+const pythonExecutable = process.platform === 'win32'
+  ? join(backendDirectory, '.venv', 'Scripts', 'python.exe')
+  : join(backendDirectory, '.venv', 'bin', 'python')
 
 export const BACKEND_PORT = Number(process.env.COLLAB_E2E_BACKEND_PORT ?? 8791)
 export const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`

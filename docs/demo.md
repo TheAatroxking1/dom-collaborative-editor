@@ -11,9 +11,11 @@ npm --prefix frontend run build
 powershell.exe -NoProfile -File scripts/serve.ps1
 ```
 
+在 macOS 上按 [macOS 指南](macos.md) 安装依赖，将启动命令换成 `sh scripts/serve.sh`；后面的浏览器操作相同。
+
 打开 <http://127.0.0.1:5274>，准备两个独立浏览器环境，例如 Chrome 与 Edge，或者普通窗口与隐私窗口。所有步骤都使用同一份文档的链接。
 
-真实双设备演示时用 `-HostAddress 0.0.0.0` 启动，并统一访问服务电脑的局域网 IP；参见[局域网指南](local-and-lan.md)。不要向另一台设备分享 localhost 链接。
+真实双设备演示时，Windows 启动参数用 `-HostAddress 0.0.0.0`，Mac 用 `--host 0.0.0.0`，并统一访问服务电脑的局域网 IP；参见各系统的运行指南。不要向另一台设备分享 localhost 链接。
 
 ## 1. 创建与同段编辑
 

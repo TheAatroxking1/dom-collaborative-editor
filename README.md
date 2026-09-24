@@ -4,7 +4,7 @@
 
 前端采用 **Vue 3 + TypeScript + Tiptap / ProseMirror**，正文通过 DOM / `contenteditable` 渲染；后端采用 **Python + FastAPI**。Yjs / pycrdt 处理并发合并，现成库负责同步与持久化。
 
-[快速开始](#快速开始windows) · [操作说明](#怎么使用) · [局域网运行](#局域网运行) · [核心代码](#核心代码) · [测试](#测试) · [限制](#当前限制)
+[Windows 启动](#快速开始windows) · [macOS 启动](#快速开始macos) · [操作说明](#怎么使用) · [局域网运行](#局域网运行) · [核心代码](#核心代码) · [测试](#测试)
 
 ## 能做什么
 
@@ -25,7 +25,24 @@
 
 ## 快速开始（Windows）
 
-以下命令在 Windows 的 **PowerShell** 中执行，系统自带的 **Windows PowerShell 5.1** 即可，PowerShell 7 也可使用。建议使用 **Node.js 24.x、Python 3.12、uv**，并安装 Git。依赖版本已锁定，不需要重新生成锁文件。
+以下命令在 Windows 自带的 **PowerShell 5.1** 或 PowerShell 7 中执行。先安装以下三个工具，安装完成后重新打开终端：
+
+| 工具 | 用途 | 安装来源 |
+| --- | --- | --- |
+| Git | 克隆仓库 | [Git 官网](https://git-scm.com/install/windows) |
+| Node.js 24.x（含 npm） | 构建前端 | [Node.js 官网](https://nodejs.org/en/download)，选择 24.x |
+| Python 3.12 | 运行后端 | [Python 官网](https://www.python.org/downloads/)，选择 3.12 系列并安装 Python Launcher |
+
+先确认环境，以下四条命令都应显示版本：
+
+```powershell
+git --version
+node --version
+npm --version
+py -3.12 --version
+```
+
+**不需要安装 uv 或 PowerShell 7。** 默认使用 Python 自带的 `venv` 和 `pip`；依赖版本已锁定，不需要重新生成锁文件。若没有 `py`，但 `python --version` 显示 3.12.x，可将下面的 `py -3.12` 换成 `python`；其他版本不应直接替代。
 
 ### 1. 克隆并安装依赖
 
@@ -33,12 +50,14 @@
 git clone https://github.com/TheAatroxking1/dom-collaborative-editor.git
 cd dom-collaborative-editor
 
-uv venv --python 3.12 backend/.venv
-uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock
+py -3.12 -m venv backend/.venv
+.\backend\.venv\Scripts\python.exe -m pip install --require-hashes -r backend/requirements.lock
 npm --prefix frontend ci
 ```
 
 下面的命令都从**仓库根目录**运行。依赖安装需要联网；正常使用不依赖第三方协作服务。
+
+如果正在按旧说明操作并遇到“无法识别 uv”，直接用上面的两条 Python 命令替代原来的两条 uv 命令即可。已安装 uv 的用户仍可用 `uv venv` / `uv pip sync` 安装同一份锁文件，它是可选工具。
 
 ### 2. 构建并启动
 
@@ -62,6 +81,25 @@ powershell.exe -NoProfile -File scripts/serve.ps1
 同一浏览器的两个标签页也支持，但它们共享站点存储。验证独立设备的恢复行为时，使用不同浏览器、独立配置文件或真实第二台设备。
 
 **GitHub 仓库提供源码，不是已部署的在线编辑器；GitHub Pages 也不能运行这里的 Python 同步服务。**
+
+## 快速开始（macOS）
+
+在 macOS 的「终端」中执行，使用系统自带的 zsh / sh，**不需要 PowerShell 或 uv**。先准备 Git、Node.js 24.x（含 npm）和 Python 3.12；用 `python3.12 --version` 确认版本。工具安装与常见问题见 [macOS 运行指南](docs/macos.md)。
+
+```sh
+git clone https://github.com/TheAatroxking1/dom-collaborative-editor.git
+cd dom-collaborative-editor
+
+python3.12 -m venv backend/.venv
+backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements.lock
+npm --prefix frontend ci
+npm --prefix frontend run build
+sh scripts/serve.sh
+```
+
+打开 **<http://127.0.0.1:5274>**。终端保持运行，按 **Control+C** 正常停止。后续启动只需要最后一条命令；更新前端源码后需要重新构建。
+
+Mac 虚拟环境中的 Python 位于 `backend/.venv/bin/python`，Windows 则是 `backend/.venv/Scripts/python.exe`。请分别克隆并安装依赖，不要把 Windows 的 `.venv` 或 `node_modules` 复制到 Mac。使用 `sh scripts/serve.sh` 不需要额外执行 `chmod`。
 
 ## 怎么使用
 
@@ -87,11 +125,19 @@ powershell.exe -NoProfile -File scripts/serve.ps1
 
 只有提供服务的电脑需要安装项目。完成上面的安装与构建后，在该电脑执行：
 
+Windows：
+
 ```powershell
 powershell.exe -NoProfile -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
 ```
 
-用 `ipconfig` 查看这台电脑当前网卡的 IPv4 地址。假设是 `192.168.1.100`，所有设备统一访问：
+macOS：
+
+```sh
+sh scripts/serve.sh --host 0.0.0.0 --port 5274
+```
+
+Windows 用 `ipconfig` 查看当前网卡的 IPv4 地址；Mac 可在「系统设置 → 网络 → 当前连接的详细信息 → TCP/IP」查看。假设是 `192.168.1.100`，所有设备统一访问：
 
 ```text
 http://192.168.1.100:5274
@@ -99,7 +145,7 @@ http://192.168.1.100:5274
 
 在这个地址新建文档并分享链接。**不要把包含 `127.0.0.1`、`localhost` 或 `0.0.0.0` 的地址发给另一台设备**；前两者指向访问者自己，后者是监听地址。
 
-设备需处于可互通的网络，服务电脑保持运行；连接失败时检查 Windows 防火墙的专用网络入站规则、路由器访客隔离、VPN 和端口占用。
+设备需处于可互通的网络，服务电脑保持运行；连接失败时检查服务电脑的防火墙入站规则、路由器访客隔离、VPN 和端口占用。
 
 | 使用环境 | 在线协作 | 已打开页面断线后继续编辑 | 整站离线后刷新 |
 | --- | --- | --- | --- |
@@ -112,12 +158,20 @@ http://192.168.1.100:5274
 
 ## 开发模式（5273）
 
-需要修改前端并热更新时，开两个 PowerShell 终端，在仓库根目录分别运行：
+需要修改前端并热更新时，开两个终端，在仓库根目录分别运行。Windows 后端命令：
 
 ```powershell
 # 终端 A：后端
 backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787 --workers 1 --timeout-graceful-shutdown 10
 ```
+
+macOS 后端命令：
+
+```sh
+backend/.venv/bin/python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787 --workers 1 --timeout-graceful-shutdown 10
+```
+
+另一个终端启动前端（两种系统相同）：
 
 ```powershell
 # 终端 B：前端
@@ -126,7 +180,7 @@ npm --prefix frontend run dev
 
 打开 **<http://127.0.0.1:5273>**。前端开发服务器代理 API / WebSocket 到 8787。分别在各自终端按 Ctrl+C 停止。
 
-也可以用 `powershell.exe -NoProfile -File scripts/dev.ps1` 一键启动，但该脚本退出时会强制结束自己启动的子进程，不能用于验证正常停机保存。
+Windows 也可以用 `powershell.exe -NoProfile -File scripts/dev.ps1` 一键启动，但该脚本退出时会强制结束自己启动的子进程，不能用于验证正常停机保存。
 
 开发版和构建版使用不同端口，以免生产 Service Worker 的页面缓存接管开发页面。**切换模式前先停止另一个后端；不能让两个服务进程使用同一数据目录。**
 
@@ -183,7 +237,7 @@ flowchart LR
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `COLLAB_DATA_DIR` | `backend/data/v2` | 服务端数据目录；相对路径基于启动时的工作目录 |
-| `COLLAB_STATIC_DIR` | 未设置 | 静态构建目录；`serve.ps1` 自动指向 `frontend/dist` |
+| `COLLAB_STATIC_DIR` | 未设置 | 静态构建目录；`serve.ps1` / `serve.sh` 自动指向 `frontend/dist` |
 | `COLLAB_BACKEND_URL` | `http://127.0.0.1:8787` | Vite 开发代理目标 |
 | `COLLAB_DEV_PORT` | `5273` | Vite 开发端口 |
 | `PLAYWRIGHT_CHROMIUM_PATH` | 未设置 | 测试使用的本机 Chromium / Chrome 可执行文件 |
@@ -199,7 +253,7 @@ powershell.exe -NoProfile -File scripts/serve.ps1 -Port 5274
 
 ## 测试
 
-只运行应用不需要安装测试浏览器。运行完整验证前，先安装 Playwright Chromium：
+只运行应用不需要安装测试浏览器。以下是 Windows 命令；macOS 的测试命令见 [macOS 运行指南](docs/macos.md#开发与测试)。运行完整验证前，先安装 Playwright Chromium：
 
 ```powershell
 npm --prefix frontend exec -- playwright install chromium
@@ -236,6 +290,7 @@ npm --prefix frontend run test:e2e:production
 - **撤销历史**：只属于当前会话，刷新后不保留；没有文档历史版本或回滚。
 - **离线条件**：必须先访问过页面和该文档并完成缓存；第一次离线访问、清除站点数据后或换浏览器后，不能凭空恢复正文。
 - **验证范围**：自动化主要使用 Windows + Chromium 的独立浏览器上下文；不能代替真实双设备局域网、持续弱网及系统中文输入法人工验收。见[中文输入法检查表](docs/manual-ime-checklist.md)和[已有离线验收记录](docs/offline-lan-validation.md)。
+- **macOS 验收**：已补启动入口和平台路径适配；依赖与脚本检查不等于 Mac 真机验收，当前没有完成 Mac 上的安装、浏览器和中文输入法全流程实测。
 - **旧数据**：早期自研协议的 `backend/data/` 数据与当前 `v2/` 不兼容，没有自动迁移。
 - **Python 侧正文操作**：服务端只接收和保存二进制更新；不要直接按 Python 字符下标改正文，emoji 等非 BMP 字符与 Yjs 的索引单位不同。
 
