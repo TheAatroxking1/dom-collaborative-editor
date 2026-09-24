@@ -25,7 +25,30 @@
 
 ## 快速开始（Windows）
 
-以下命令在 Windows 自带的 **PowerShell 5.1** 或 PowerShell 7 中执行。先安装以下三个工具，安装完成后重新打开终端：
+### 一键安装与启动（推荐）
+
+适用于已更新的 **Windows 10 / 11**（Python Install Manager 至少需要 Windows 10 21H2，系统内部版本 19044）。无需预先安装 Git、uv、PowerShell 7（`pwsh`）或 winget。
+
+1. 在 [GitHub 仓库](https://github.com/TheAatroxking1/dom-collaborative-editor) 点击 **Code → Download ZIP**，将 ZIP **完整解压**到一个可写目录；不要在压缩包内直接运行。
+2. 双击根目录的 **`install.bat`**，保持联网并等到安装与构建完成。缺少 Python 时，会调用官方 Python Install Manager 安装流程；若系统要求确认安装，请允许。
+3. 双击 **`start.bat`**，然后打开 **<http://127.0.0.1:5274>**。
+
+安装脚本会复用现有的 Node.js 24 和 Python 3.12。缺少合适的 Node.js 时，从 [Node.js 官方发布目录](https://nodejs.org/dist/)下载 24.x ZIP，核对官方 SHA-256 清单后解压到项目的 `.tools`；缺少 Python 3.12 时，通过[官方 Python Install Manager](https://docs.python.org/3/using/windows.html#advanced-installation)安装。Python Manager 及其管理的 Python 属于当前 Windows 用户，项目依赖则装入 `backend/.venv` 和 `frontend/node_modules`。脚本不永久修改系统 PATH。
+
+安装失败时查看根目录 **`install.log`**，修复网络或安装错误后可再次运行 `install.bat`。后续启动只需 `start.bat`；更新项目源码后重新运行 `install.bat` 安装依赖并构建。启动后保持窗口运行，按 **Ctrl+C** 正常停止，留意停机或保存错误。如果随后出现“终止批处理作业 (Y/N)?”，输入 `Y` 结束窗口中的批处理。
+
+批处理使用 Windows 自带的 PowerShell 5.1；执行策略设置只作用于本次 PowerShell 进程，不修改系统或用户的执行策略。批处理结束后会暂停，避免错误窗口闪退；命令行自动化可将 `--no-pause` 放在第一个参数位置，例如：
+
+```powershell
+.\install.bat --no-pause
+.\start.bat --no-pause -HostAddress 127.0.0.1 -Port 5274
+```
+
+已在 Windows PowerShell 5.1 下验证全新项目目录的依赖安装与构建、Node.js 官方 ZIP 下载校验、重复安装保留数据及 BAT 启动；当前尚未在全新 Windows 真机上完成从零安装所有工具的全流程验收。受管理的电脑若禁止 MSIX 安装，可使用下方手动路线并按单位规定安装工具。
+
+### 手动安装
+
+以下命令在 Windows 自带的 **PowerShell 5.1** 或 PowerShell 7 中执行。选择手动路线时，先安装以下三个工具，安装完成后重新打开终端：
 
 | 工具 | 用途 | 安装来源 |
 | --- | --- | --- |

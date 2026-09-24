@@ -31,6 +31,8 @@ frontend/coverage/
 # 本地配置
 .env
 .env.local
+/.tools/
+/install.log
 
 # 编辑器与系统
 .vscode/
