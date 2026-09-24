@@ -25,7 +25,7 @@
 
 ## 快速开始（Windows）
 
-以下命令在 **PowerShell 7** 中执行。建议使用 **Node.js 24.x、Python 3.12、uv**，并安装 Git。依赖版本已锁定，不需要重新生成锁文件。
+以下命令在 Windows 的 **PowerShell** 中执行，系统自带的 **Windows PowerShell 5.1** 即可，PowerShell 7 也可使用。建议使用 **Node.js 24.x、Python 3.12、uv**，并安装 Git。依赖版本已锁定，不需要重新生成锁文件。
 
 ### 1. 克隆并安装依赖
 
@@ -44,10 +44,12 @@ npm --prefix frontend ci
 
 ```powershell
 npm --prefix frontend run build
-pwsh -File scripts/serve.ps1
+powershell.exe -NoProfile -File scripts/serve.ps1
 ```
 
 打开 **<http://127.0.0.1:5274>**。一个 Python 进程同时提供网页、HTTP API 和 WebSocket。终端保持运行，按 **Ctrl+C** 正常停止，留意终端是否出现停机或保存错误。
+
+**如果此前使用 `pwsh -File scripts/serve.ps1` 提示“无法识别 pwsh”**，只需换成上面的 `powershell.exe` 命令，不用重新安装依赖或构建。`pwsh` 是另外安装的 PowerShell 7 的命令名；本项目的脚本兼容 Windows 自带的 PowerShell 5.1。已安装 PowerShell 7 时，原 `pwsh` 命令仍可使用。
 
 ### 3. 体验双人编辑
 
@@ -86,7 +88,7 @@ pwsh -File scripts/serve.ps1
 只有提供服务的电脑需要安装项目。完成上面的安装与构建后，在该电脑执行：
 
 ```powershell
-pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
+powershell.exe -NoProfile -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
 ```
 
 用 `ipconfig` 查看这台电脑当前网卡的 IPv4 地址。假设是 `192.168.1.100`，所有设备统一访问：
@@ -124,7 +126,7 @@ npm --prefix frontend run dev
 
 打开 **<http://127.0.0.1:5273>**。前端开发服务器代理 API / WebSocket 到 8787。分别在各自终端按 Ctrl+C 停止。
 
-也可以用 `pwsh -File scripts/dev.ps1` 一键启动，但该脚本退出时会强制结束自己启动的子进程，不能用于验证正常停机保存。
+也可以用 `powershell.exe -NoProfile -File scripts/dev.ps1` 一键启动，但该脚本退出时会强制结束自己启动的子进程，不能用于验证正常停机保存。
 
 开发版和构建版使用不同端口，以免生产 Service Worker 的页面缓存接管开发页面。**切换模式前先停止另一个后端；不能让两个服务进程使用同一数据目录。**
 
@@ -190,7 +192,7 @@ flowchart LR
 
 ```powershell
 $env:COLLAB_DATA_DIR = 'D:\collab-data'
-pwsh -File scripts/serve.ps1 -Port 5274
+powershell.exe -NoProfile -File scripts/serve.ps1 -Port 5274
 ```
 
 配置通过进程环境变量读取，不自动加载仓库根目录的 `.env`。后端仅支持 **1 个 Uvicorn worker**。
@@ -201,14 +203,14 @@ pwsh -File scripts/serve.ps1 -Port 5274
 
 ```powershell
 npm --prefix frontend exec -- playwright install chromium
-pwsh -File scripts/verify.ps1
+powershell.exe -NoProfile -File scripts/verify.ps1
 ```
 
 下载受限时可以使用本机已有的 Chrome：
 
 ```powershell
 $env:PLAYWRIGHT_CHROMIUM_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
-pwsh -File scripts/verify.ps1
+powershell.exe -NoProfile -File scripts/verify.ps1
 ```
 
 验证按顺序执行：后端 pytest → 前端 Vitest → 类型检查 → 构建 → 开发版端到端测试 → 构建版端到端测试，任一步失败即停止。端到端测试使用临时数据目录，不修改日常使用的文档。

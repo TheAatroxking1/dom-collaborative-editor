@@ -33,13 +33,13 @@ uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/r
 npm --prefix frontend ci
 ```
 
-以下示例在 Windows PowerShell 7 中执行（命令为 `pwsh`），建议 Python 3.12、Node 24.x、uv。
+以下示例在 Windows 自带的 PowerShell 5.1 或 PowerShell 7 中执行，启动命令使用系统自带的 `powershell.exe`，建议 Python 3.12、Node 24.x、uv。
 所有命令从仓库根目录运行；其他系统需要调整虚拟环境可执行文件路径，本文未将其标为已验收。
 
 ### 开发模式
 
 ```powershell
-pwsh -File scripts/dev.ps1
+powershell.exe -NoProfile -File scripts/dev.ps1
 ```
 
 打开 <http://127.0.0.1:5273>。这个脚本用 `taskkill /T /F` 强制结束子进程，适合日常开发，
@@ -63,7 +63,7 @@ npm --prefix frontend run build
 ```
 
 ```powershell
-pwsh -File scripts/serve.ps1
+powershell.exe -NoProfile -File scripts/serve.ps1
 ```
 
 打开 <http://127.0.0.1:5274>。一个 Python 进程同时提供页面、API 与 WebSocket；前台运行，
@@ -124,7 +124,7 @@ mkcert -cert-file .local-certs/lan.pem -key-file .local-certs/lan-key.pem localh
 ### 启动并访问
 
 ```powershell
-pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274 -CertFile .local-certs/lan.pem -KeyFile .local-certs/lan-key.pem
+powershell.exe -NoProfile -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274 -CertFile .local-certs/lan.pem -KeyFile .local-certs/lan-key.pem
 ```
 
 其他设备打开 `https://实际局域网IP:5274`。地址栏不应有证书警告，页面里
@@ -135,7 +135,7 @@ pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274 -CertFile .local-ce
 ### HTTP 局域网（不用证书）
 
 ```powershell
-pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
+powershell.exe -NoProfile -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
 ```
 
 其他设备打开 `http://实际局域网IP:5274`。在线协作与复制降级可用，界面会说明当前地址

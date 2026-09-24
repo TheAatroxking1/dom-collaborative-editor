@@ -8,7 +8,7 @@
 
 ```powershell
 npm --prefix frontend run build
-pwsh -File scripts/serve.ps1
+powershell.exe -NoProfile -File scripts/serve.ps1
 ```
 
 打开 <http://127.0.0.1:5274>，准备两个独立浏览器环境，例如 Chrome 与 Edge，或者普通窗口与隐私窗口。所有步骤都使用同一份文档的链接。
@@ -41,7 +41,7 @@ pwsh -File scripts/serve.ps1
 
 1. 两端保持文档打开，在服务终端按 Ctrl+C，等待服务停止。
 2. A 与 B 分别继续输入或删除不同内容。
-3. 用同一数据目录重新运行 `pwsh -File scripts/serve.ps1`。
+3. 用同一数据目录重新运行 `powershell.exe -NoProfile -File scripts/serve.ps1`。
 
 预期：断线时编辑仍可进行，重连后双方修改合并。光标、鼠标等临时状态不等于正文保存状态。
 
