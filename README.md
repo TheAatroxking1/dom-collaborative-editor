@@ -46,11 +46,11 @@ winget install 9NQ7512CXL7T -e
 安装器完成后，**关闭原来的 PowerShell，重新打开**，再安装本项目需要的 Python 3.12 并确认版本：
 
 ```powershell
-py install 3.12
+pymanager install 3.12
 py -3.12 --version
 ```
 
-应显示 `Python 3.12.x`；只安装管理器还不等于已安装项目要求的 3.12。若电脑已有旧版 Python Launcher，导致 `py install` 不被识别，可改用 `pymanager install 3.12`。命令与安装器说明见 [Python 官方 Windows 指南](https://docs.python.org/3/using/windows.html#installing-runtimes)。
+应显示 `Python 3.12.x`；只安装管理器还不等于已安装项目要求的 3.12。安装命令明确使用 `pymanager`，因为旧版 Python Launcher 也叫 `py`，但不支持 `py install`。如果 `pymanager` 也无法识别，先确认上面的 Python Install Manager 已安装，并重新打开终端。命令与安装器说明见 [Python 官方 Windows 指南](https://docs.python.org/3/using/windows.html)。
 
 然后确认其余环境，以下四条命令都应显示版本；某一步报错时先解决该错误，再继续安装项目依赖：
 
