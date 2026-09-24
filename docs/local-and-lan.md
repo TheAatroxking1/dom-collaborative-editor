@@ -21,46 +21,48 @@
 
 ### 安装
 
-```bash
+```powershell
 uv venv --python 3.12 backend/.venv
 ```
 
-```bash
+```powershell
 uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock
 ```
 
-```bash
+```powershell
 npm --prefix frontend ci
 ```
 
-要求 Python 3.12、Node 20.19+ 或 22.12+（Vite 8 的要求）、uv。
+以下示例在 Windows PowerShell 7 中执行（命令为 `pwsh`），建议 Python 3.12、Node 24.x、uv。
+所有命令从仓库根目录运行；其他系统需要调整虚拟环境可执行文件路径，本文未将其标为已验收。
 
 ### 开发模式
 
-```bash
+```powershell
 pwsh -File scripts/dev.ps1
 ```
 
 打开 <http://127.0.0.1:5273>。这个脚本用 `taskkill /T /F` 强制结束子进程，适合日常开发，
 不适合验证「正常停机」。需要正常停机时开两个终端：
 
-```bash
-backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787
+```powershell
+backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787 --workers 1 --timeout-graceful-shutdown 10
 ```
 
-```bash
+```powershell
 npm --prefix frontend run dev
 ```
 
-在跑后端的那个终端按 **Ctrl+C**，uvicorn 会走正常关闭流程（写回完整文档状态）。
+在跑后端的那个终端按 **Ctrl+C**，uvicorn 会进入正常关闭流程，应用会尝试写回完整文档状态。
+请留意终端错误日志，连接排空的 10 秒限制并不是整个进程的总停机时限。
 
 ### 构建版（验收用这个）
 
-```bash
+```powershell
 npm --prefix frontend run build
 ```
 
-```bash
+```powershell
 pwsh -File scripts/serve.ps1
 ```
 
@@ -92,7 +94,7 @@ SQLite 主文件可能拿到不一致的快照。
 
 ### 找本机地址
 
-```bash
+```powershell
 ipconfig
 ```
 
@@ -104,11 +106,12 @@ ipconfig
 mkcert 需要你自行安装（Windows 可用 `choco install mkcert` 或从官方仓库下载）。把下面的
 地址换成你**实际**的 IPv4：
 
-```bash
+```powershell
 mkcert -install
 ```
 
-```bash
+```powershell
+New-Item -ItemType Directory -Force .local-certs | Out-Null
 mkcert -cert-file .local-certs/lan.pem -key-file .local-certs/lan-key.pem localhost 127.0.0.1 192.168.1.100
 ```
 
@@ -120,7 +123,7 @@ mkcert -cert-file .local-certs/lan.pem -key-file .local-certs/lan-key.pem localh
 
 ### 启动并访问
 
-```bash
+```powershell
 pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274 -CertFile .local-certs/lan.pem -KeyFile .local-certs/lan-key.pem
 ```
 
@@ -131,12 +134,15 @@ pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274 -CertFile .local-ce
 
 ### HTTP 局域网（不用证书）
 
-```bash
+```powershell
 pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
 ```
 
 其他设备打开 `http://实际局域网IP:5274`。在线协作与复制降级可用，界面会说明当前地址
 不能启用离线页面缓存。由 HTTP 切到 HTTPS 相当于换地址，未同步的内容要先导出（见第三节）。
+
+服务电脑自己也使用同一个局域网地址创建和分享文档。不要把含 `127.0.0.1`、
+`localhost` 或 `0.0.0.0` 的链接发给其他设备。
 
 ### 连不上时按顺序排查
 

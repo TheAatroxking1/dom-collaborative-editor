@@ -1,293 +1,240 @@
 # 基于 DOM 的协同编辑器
 
-两个浏览器打开同一个文档链接，在同一段文字里同时编辑；断线可以继续写，刷新不丢内容，
-服务端重启后已写入的内容仍在。
+一个用于学习与演示协作编辑的轻量项目：两个人打开同一个链接，可以在**同一段文字里同时输入**，看到彼此的文字光标、选区和鼠标位置。适合共同写笔记、会议记录、草稿等文本内容。
 
-**架构一句话**：Vue / Tiptap 操作同一个 Y.Doc，`y-websocket` 负责网络，`y-indexeddb`
-负责本地缓存；FastAPI 接入 `pycrdt-websocket`，`pycrdt-store` 负责服务端持久化。
-应用只管理文档目录和资源生命周期，不实现同步协议，也不维护事务队列。
+前端采用 **Vue 3 + TypeScript + Tiptap / ProseMirror**，正文通过 DOM / `contenteditable` 渲染；后端采用 **Python + FastAPI**。Yjs / pycrdt 处理并发合并，现成库负责同步与持久化。
 
-- 前端：Vue 3 + TypeScript + Vite，编辑内核 Tiptap / ProseMirror
-- 协作：Yjs 13（Python 侧 pycrdt）
-- 同步：`y-websocket` 3.1.0 ↔ `pycrdt-websocket` 0.16.5，标准 Yjs 二进制协议
-- 持久化：`pycrdt-store` 0.1.5 / SQLite；浏览器侧 `y-indexeddb` 9.0.12
+[快速开始](#快速开始windows) · [操作说明](#怎么使用) · [局域网运行](#局域网运行) · [核心代码](#核心代码) · [测试](#测试) · [限制](#当前限制)
 
-设计与计划见 [`docs/superpowers/specs/`](docs/superpowers/specs/) 与
-[`docs/superpowers/plans/`](docs/superpowers/plans/)（2026-09-21 的首版设计与自研协议路线
-已被 2026-09-23 的精简方案替代）。演示步骤见 [`docs/demo.md`](docs/demo.md)，
-本机与局域网运行见 [`docs/local-and-lan.md`](docs/local-and-lan.md)，
-实际验收结果与未验证边界见 [`docs/offline-lan-validation.md`](docs/offline-lan-validation.md)。
+## 能做什么
 
-## 环境要求
+| 能力 | 当前行为 |
+| --- | --- |
+| 文本编辑 | 输入、修改、删除、分段、段内换行、纯文本粘贴 |
+| 同段协作 | 多人同时改同一段，自动合并，恢复连接后继续同步 |
+| 文字光标与选区 | 显示其他人的输入位置、文字选择和自动生成的访客名 |
+| 远端鼠标 | 显示对方在实际段落范围内的大致位置 |
+| 整段选择 | 从正文左侧留白拖动选择段落，其他人能看到选中高亮 |
+| 批量操作 | 复制或删除选中的段落，整批删除可一次撤销 |
+| Undo / Redo | 撤销、重做本会话自己的编辑，不撤销别人独立完成的编辑 |
+| 本地恢复与服务端保存 | 浏览器 IndexedDB 缓存；服务端 SQLite 存储 |
+| 离线编辑 | 已打开的文档断线后可继续编辑，重连后自动合并 |
+| 离线刷新与备份 | 构建版在安全上下文缓存页面资源；支持导出和合并 JSON 备份 |
 
-| 组件 | 版本 | 说明 |
-| --- | --- | --- |
-| Node.js | 24.x | 前端构建与测试 |
-| Python | 3.12 | 后端运行时；`requirements.lock` 按 3.12 生成 |
-| uv | 0.12+ | 创建虚拟环境与锁定依赖 |
+目前正文是**纯文本 + 段落**，没有图片、表格、附件、富文本样式或 Markdown 渲染。输入 Markdown 符号会按普通文字显示。
 
-## 安装
+## 快速开始（Windows）
 
-```bash
+以下命令在 **PowerShell 7** 中执行。建议使用 **Node.js 24.x、Python 3.12、uv**，并安装 Git。依赖版本已锁定，不需要重新生成锁文件。
+
+### 1. 克隆并安装依赖
+
+```powershell
+git clone https://github.com/TheAatroxking1/dom-collaborative-editor.git
+cd dom-collaborative-editor
+
 uv venv --python 3.12 backend/.venv
-```
-
-```bash
 uv pip sync --python backend/.venv/Scripts/python.exe --require-hashes backend/requirements.lock
+npm --prefix frontend ci
 ```
 
-```bash
-npm --prefix frontend install
-```
+下面的命令都从**仓库根目录**运行。依赖安装需要联网；正常使用不依赖第三方协作服务。
 
-端到端测试需要 Chromium：
+### 2. 构建并启动
 
-```bash
-npm exec --prefix frontend -- playwright install chromium
-```
-
-受限网络下无法从官方源下载时，可指向本机已有的浏览器：
-
-```bash
-set PLAYWRIGHT_CHROMIUM_PATH=C:\path\to\chrome.exe
-```
-
-## 启动
-
-一键启动（脚本只管理自己创建的进程，不会按端口结束未知进程）：
-
-```bash
-pwsh -File scripts/dev.ps1
-```
-
-> **注意**：一键脚本会用 `taskkill /T /F` **强制结束**它启动的子进程，服务端不会执行
-> 停机时的完整状态写入。它只适合日常开发。
-
-需要**正常关闭**（会触发服务端写完整状态）时，用两个终端：
-
-```bash
-backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787
-```
-
-```bash
-npm --prefix frontend run dev
-```
-
-在这个终端按 **Ctrl+C** 结束后端，uvicorn 会走正常关闭流程。前端开发服务器在另一个
-终端，同样用 Ctrl+C。
-
-**构建版**（一个进程同时提供页面、API 与 WebSocket，前台运行，Ctrl+C 正常停止）：
-
-```bash
+```powershell
+npm --prefix frontend run build
 pwsh -File scripts/serve.ps1
 ```
 
-需要先构建一次：`npm --prefix frontend ci` 然后 `npm --prefix frontend run build`。
-默认地址 <http://127.0.0.1:5274>。构建版用 5274、开发版用 5273，两者分开是为了避免
-已安装的生产 Service Worker 接管开发页面。**切换模式前先停掉另一个后端**——即使端口
-不同，也不要有两个 Python 进程同时写同一个数据目录。
+打开 **<http://127.0.0.1:5274>**。一个 Python 进程同时提供网页、HTTP API 和 WebSocket。终端保持运行，按 **Ctrl+C** 正常停止，留意终端是否出现停机或保存错误。
 
-打开 <http://127.0.0.1:5273>，点「新建文档」，把地址栏里的链接复制到另一个浏览器
-（或另一个浏览器配置文件）打开即可协作。**不要用同一窗口的两个标签页**——虽然也支持，
-但看不到跨端同步的效果。
+### 3. 体验双人编辑
 
-默认端口是 8787（后端）与 5273（前端），刻意避开 5173 和 8000——这两个端口在开发机上
-经常被其他项目或 Docker 占用。需要换端口时三处要一致：
+1. 点击「新建文档」，输入几行文字。
+2. 点击「复制协作链接」，用另一个浏览器或隐私窗口打开。
+3. 两边在同一段输入不同内容，观察文字同步和协作者光标。
+4. 在一边选中文字，或者从正文左侧留白拖动选择几段，观察另一边的高亮。
+5. 删除所选段落，再点「撤销」，确认整批恢复。
 
-```bash
-backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 9000
+同一浏览器的两个标签页也支持，但它们共享站点存储。验证独立设备的恢复行为时，使用不同浏览器、独立配置文件或真实第二台设备。
+
+**GitHub 仓库提供源码，不是已部署的在线编辑器；GitHub Pages 也不能运行这里的 Python 同步服务。**
+
+## 怎么使用
+
+| 操作 | 方法 |
+| --- | --- |
+| 新建段落 | Enter |
+| 同一段内换行 | Shift+Enter |
+| 选择文字 | 在正文文字区域拖动 |
+| 选择整段 | 在正文**左侧留白**按下鼠标并拖动，不需要切换模式 |
+| 清除整段选择 | 点击正文或选区外，或按 Escape |
+| 复制整篇 | 点击「复制正文」 |
+| 复制选中的段落 | 点击「复制所选段落」，或 Ctrl/Cmd+C |
+| 删除选中的段落 | 点击「删除所选段落」，或 Delete / Backspace |
+| 撤销 / 重做 | 工具栏按钮；Ctrl/Cmd+Z、Ctrl/Cmd+Shift+Z（Windows 也支持 Ctrl+Y） |
+| 保存可携带副本 | 页面底部「备份与迁移」→「导出当前正文」 |
+| 再次打开文档 | 保存或收藏协作链接，目前没有文档列表 |
+
+文字选择与整段选择是两种交互。整段选择不会锁住段落，其他人仍可编辑；复制、删除针对**执行操作时的最新内容**。窄窗口中工具栏可横向滚动。
+
+如果浏览器不允许访问剪贴板，页面会显示可手动复制的文字或链接。
+
+## 局域网运行
+
+只有提供服务的电脑需要安装项目。完成上面的安装与构建后，在该电脑执行：
+
+```powershell
+pwsh -File scripts/serve.ps1 -HostAddress 0.0.0.0 -Port 5274
 ```
 
-```bash
-COLLAB_BACKEND_URL=http://127.0.0.1:9000 COLLAB_DEV_PORT=5300 npm --prefix frontend run dev
+用 `ipconfig` 查看这台电脑当前网卡的 IPv4 地址。假设是 `192.168.1.100`，所有设备统一访问：
+
+```text
+http://192.168.1.100:5274
 ```
 
-运行时配置：
+在这个地址新建文档并分享链接。**不要把包含 `127.0.0.1`、`localhost` 或 `0.0.0.0` 的地址发给另一台设备**；前两者指向访问者自己，后者是监听地址。
 
-| 环境变量 | 默认值 | 作用 |
+设备需处于可互通的网络，服务电脑保持运行；连接失败时检查 Windows 防火墙的专用网络入站规则、路由器访客隔离、VPN 和端口占用。
+
+| 使用环境 | 在线协作 | 已打开页面断线后继续编辑 | 整站离线后刷新 |
+| --- | --- | --- | --- |
+| 开发版（5273） | 支持 | 支持 | 不提供页面离线缓存 |
+| 本机构建版（127.0.0.1:5274） | 支持 | 支持 | 页面资源与该文档已缓存后可用 |
+| 局域网 HTTP 构建版 | 支持 | 支持 | 不保证，通常无法重新加载页面 |
+| 局域网可信 HTTPS 构建版 | 支持 | 支持 | 页面资源与该文档已缓存后可用 |
+
+可信 HTTPS 配置、排障和换地址迁移见 [本地与局域网指南](docs/local-and-lan.md)。不要在编辑过程中随意更换协议、主机名或端口：浏览器按地址来源隔离本地数据，未同步内容应先导出备份。
+
+## 开发模式（5273）
+
+需要修改前端并热更新时，开两个 PowerShell 终端，在仓库根目录分别运行：
+
+```powershell
+# 终端 A：后端
+backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787 --workers 1 --timeout-graceful-shutdown 10
+```
+
+```powershell
+# 终端 B：前端
+npm --prefix frontend run dev
+```
+
+打开 **<http://127.0.0.1:5273>**。前端开发服务器代理 API / WebSocket 到 8787。分别在各自终端按 Ctrl+C 停止。
+
+也可以用 `pwsh -File scripts/dev.ps1` 一键启动，但该脚本退出时会强制结束自己启动的子进程，不能用于验证正常停机保存。
+
+开发版和构建版使用不同端口，以免生产 Service Worker 的页面缓存接管开发页面。**切换模式前先停止另一个后端；不能让两个服务进程使用同一数据目录。**
+
+## 同步、保存和备份
+
+```mermaid
+flowchart LR
+    A["浏览器 A<br/>Vue + Tiptap + Y.Doc"] <-->|Yjs WebSocket| S["FastAPI<br/>pycrdt-websocket"]
+    B["浏览器 B<br/>Vue + Tiptap + Y.Doc"] <-->|Yjs WebSocket| S
+    A <--> IA["本地 IndexedDB"]
+    B <--> IB["本地 IndexedDB"]
+    S --> DB["pycrdt-store / SQLite"]
+```
+
+- **并发合并**：Yjs / pycrdt 维护共享正文；不用段落锁限制同段输入。
+- **断线重连**：`y-websocket` 重新交换状态并补齐变化；本项目不维护自定义 ACK 或重发队列。
+- **本地缓存**：`y-indexeddb` 恢复当前浏览器中的文档，再连接服务端。
+- **服务端保存**：`pycrdt-store` 写 SQLite；应用在正常停机流程中额外写入完整状态。
+- **协作者状态**：光标、鼠标、选区使用 Awareness，属于临时信息，不进入正文、数据库或备份。
+
+**「已连接」表示 WebSocket 已连接，不是每次输入已写入磁盘的凭证。** 页面显示修改、另一端看到修改、服务端落盘是不同阶段；突然断电、强制结束进程或清除浏览器存储，可能影响尚未保存的修改。
+
+| 位置 | 内容 |
+| --- | --- |
+| `backend/data/v2/documents.sqlite3` | 文档 ID 与创建时间 |
+| `backend/data/v2/updates.sqlite3` | 正文的 CRDT 更新 |
+| 浏览器 IndexedDB：`dom-collab-v2:<documentId>` | 当前地址下的本地副本 |
+
+服务端整体备份：**正常停止后复制整个数据目录**，不要只复制运行中的某一个 SQLite 文件。数据库、本地证书、依赖和个人导出的备份文件都已加入 Git 忽略规则。
+
+页面里的 JSON 备份支持离线导出、只读预览，以及对**同一文档 ID**合并。合并需要当前服务器上存在该文档；它是 CRDT 合并，**不是恢复历史版本**。换到空服务器时，应迁移整个服务端数据目录，或者将备份预览里的纯文本复制到新文档。
+
+## 核心代码
+
+阅读顺序可以从 `EditorPane.vue → session.ts → main.py → collaboration.py` 开始，再看交互模块。
+
+| 文件 | 职责 |
+| --- | --- |
+| [frontend/src/App.vue](frontend/src/App.vue) | 文档入口、链接路由、状态提示 |
+| [frontend/src/editor/EditorPane.vue](frontend/src/editor/EditorPane.vue) | 组装编辑器、工具栏、粘贴、撤销与覆盖层 |
+| [frontend/src/editor/extensions.ts](frontend/src/editor/extensions.ts) | 最小段落 schema、协作历史与文字光标 |
+| [frontend/src/documents/session.ts](frontend/src/documents/session.ts) | Y.Doc、网络与本地缓存的生命周期 |
+| [backend/app/main.py](backend/app/main.py) | FastAPI 路由、WebSocket 入口、静态页面 |
+| [backend/app/collaboration.py](backend/app/collaboration.py) | 房间恢复、库组装、初始 Awareness、停机写回 |
+| [backend/app/documents.py](backend/app/documents.py) | 文档目录与唯一初始正文 |
+| [frontend/src/editor/paragraphs.ts](frontend/src/editor/paragraphs.ts) | 稳定段落引用与 DOM 测量 |
+| [frontend/src/editor/presence.ts](frontend/src/editor/presence.ts) | 访客身份与远端鼠标 |
+| [frontend/src/editor/paragraphSelection.ts](frontend/src/editor/paragraphSelection.ts) | 留白拖动、整段高亮、批量复制与删除 |
+
+其他辅助代码：`frontend/src/documents/backup.ts` 与 `DocumentBackup.vue` 处理备份；`frontend/src/offline.ts` 处理页面资源缓存；`frontend/src/clipboard.ts` 处理剪贴板结果。测试放在 `backend/tests`、`frontend/tests`、`frontend/e2e` 与 `frontend/e2e-production`。
+
+## 配置
+
+| 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `COLLAB_DATA_DIR` | `backend/data/v2` | 数据目录，里面放两个数据库文件 |
-| `COLLAB_STATIC_DIR` | 未设置 | 设置后由同一进程提供该目录下的构建产物；未设置时只是 API/WS 服务 |
-| `COLLAB_BACKEND_URL` | `http://127.0.0.1:8787` | Vite 开发代理指向的后端 |
-| `COLLAB_DEV_PORT` | `5273` | Vite 开发服务器端口 |
+| `COLLAB_DATA_DIR` | `backend/data/v2` | 服务端数据目录；相对路径基于启动时的工作目录 |
+| `COLLAB_STATIC_DIR` | 未设置 | 静态构建目录；`serve.ps1` 自动指向 `frontend/dist` |
+| `COLLAB_BACKEND_URL` | `http://127.0.0.1:8787` | Vite 开发代理目标 |
+| `COLLAB_DEV_PORT` | `5273` | Vite 开发端口 |
+| `PLAYWRIGHT_CHROMIUM_PATH` | 未设置 | 测试使用的本机 Chromium / Chrome 可执行文件 |
 
-只启动一个 Uvicorn worker；首版是少量文档的单进程演示，不支持多进程协作。
+例如在 PowerShell 指定独立数据目录：
+
+```powershell
+$env:COLLAB_DATA_DIR = 'D:\collab-data'
+pwsh -File scripts/serve.ps1 -Port 5274
+```
+
+配置通过进程环境变量读取，不自动加载仓库根目录的 `.env`。后端仅支持 **1 个 Uvicorn worker**。
 
 ## 测试
 
-```bash
+只运行应用不需要安装测试浏览器。运行完整验证前，先安装 Playwright Chromium：
+
+```powershell
+npm --prefix frontend exec -- playwright install chromium
 pwsh -File scripts/verify.ps1
 ```
 
-按顺序执行后端 pytest、前端 Vitest、类型检查、构建和 Playwright，任一步失败立即以该步的
-退出码结束。也可以单独运行：
+下载受限时可以使用本机已有的 Chrome：
 
-```bash
+```powershell
+$env:PLAYWRIGHT_CHROMIUM_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+pwsh -File scripts/verify.ps1
+```
+
+验证按顺序执行：后端 pytest → 前端 Vitest → 类型检查 → 构建 → 开发版端到端测试 → 构建版端到端测试，任一步失败即停止。端到端测试使用临时数据目录，不修改日常使用的文档。
+
+默认测试端口为前端 5473、后端 8791、构建版 5483，可分别通过 `COLLAB_E2E_FRONTEND_PORT`、`COLLAB_E2E_BACKEND_PORT`、`COLLAB_E2E_PRODUCTION_PORT` 调整。
+
+单独运行：
+
+```powershell
 backend/.venv/Scripts/python.exe -m pytest -c backend/pyproject.toml backend/tests -q
-```
-
-```bash
 npm --prefix frontend test
-```
-
-```bash
+npm --prefix frontend run typecheck
 npm --prefix frontend run test:e2e
+npm --prefix frontend run build
+npm --prefix frontend run test:e2e:production
 ```
 
-端到端测试会给每个用例启动独立的 Python 进程与临时数据目录，端口默认取 8791（后端）与
-5473（前端），可用 `COLLAB_E2E_BACKEND_PORT`、`COLLAB_E2E_FRONTEND_PORT` 覆盖。
+## 当前限制
 
-## 数据放在哪里
+- **适用范围**：本机或可信局域网演示。没有账号、鉴权、访问权限、容量配额和文档管理后台；知道链接的人可以编辑。不要直接暴露到公网。
+- **鼠标范围**：当前只在实际段落矩形内显示，包括 Enter 创建的空段落；段间间距和正文下方剩余空白不显示。全编辑区覆盖已记录为[后续调整](docs/2026-09-24-follow-up-decisions.md)，尚未实现。不同窗口宽度下鼠标位置是近似的，文字光标才精确跟随文本。
+- **触屏**：没有实现触屏整段框选，保留原生文字编辑。
+- **撤销历史**：只属于当前会话，刷新后不保留；没有文档历史版本或回滚。
+- **离线条件**：必须先访问过页面和该文档并完成缓存；第一次离线访问、清除站点数据后或换浏览器后，不能凭空恢复正文。
+- **验证范围**：自动化主要使用 Windows + Chromium 的独立浏览器上下文；不能代替真实双设备局域网、持续弱网及系统中文输入法人工验收。见[中文输入法检查表](docs/manual-ime-checklist.md)和[已有离线验收记录](docs/offline-lan-validation.md)。
+- **旧数据**：早期自研协议的 `backend/data/` 数据与当前 `v2/` 不兼容，没有自动迁移。
+- **Python 侧正文操作**：服务端只接收和保存二进制更新；不要直接按 Python 字符下标改正文，emoji 等非 BMP 字符与 Yjs 的索引单位不同。
 
-| 文件 | 内容 | 由谁管理 |
-| --- | --- | --- |
-| `backend/data/v2/documents.sqlite3` | 文档目录：`documentId` 与创建时间 | 应用自己（`backend/app/documents.py`） |
-| `backend/data/v2/updates.sqlite3` | CRDT 更新 | 库（`pycrdt-store`） |
-
-两者刻意分开：应用不读写库的内部表结构，库也不会碰文档目录。浏览器缓存使用
-`dom-collab-v2:<documentId>` 作为数据库名，与旧版自研日志**不共享命名空间**。
-
-新文档由服务端生成唯一的空段落种子，先写入 CRDT 存储，成功后才登记目录并返回链接；
-失败的文档对客户端完全不可见，不会出现「能打开但正文是半初始化」的情况。
-
-## 协作者状态与整段选择
-
-两人同时编辑时能看到彼此的位置，也能整段地复制和删除。
-
-| 你想做的事 | 怎么做 |
-| --- | --- |
-| 看对方在哪儿输入 | 无需操作：对方的光标与其选中的文字会直接显示，并带一个自动生成的访客名 |
-| 看对方鼠标在哪 | 无需操作：指针显示为对方颜色的小点，只表示所在段落内的**大致位置** |
-| 选中整段 | 在正文**左侧留白**按下并拖动；拖过的段落被选中，工具栏显示「已选 N 段」 |
-| 选中一段里的字 | 和平时一样在正文里拖动——留白归整段选择，正文归文字选择 |
-| 取消整段选择 | 点击正文、点击选区外，或按 Escape |
-| 复制所选段落 | 工具栏「复制所选段落」（Ctrl/Cmd+C 也可以）；按文档顺序，段内换行与空段都保留 |
-| 删除所选段落 | 工具栏「删除所选段落」，或按 Delete / Backspace；**一次撤销**就能恢复整批 |
-
-几个需要说明的边界：
-
-- **鼠标位置是近似的。** 它发送的是「段落引用 + 段内归一化坐标」，接收端按自己的排版
-  还原，所以两端窗口宽度不同时它仍落在同一段里，但不对应同一个字符。精确位置由文字
-  光标负责。
-- **选择不加锁。** 选中段落不影响别人在同一段里继续输入，也不保存选择那一刻的正文；
-  复制和删除取的是**执行时**的内容。
-- **段落身份由 CRDT 维护。** 选区保存的是段落引用而不是序号：别人在前面插入新段落，
-  你选中的仍是原来那几段；被选中的段落被别人删掉时，它从选区里移除，绝不会顺势选中
-  邻段。除空之外没有别的「块 ID」。
-- **临时状态不落盘。** 访客名、光标、鼠标和段落选区只放在 Awareness 里，不写正文、
-  不进数据库、不进备份，也不占撤销步数。断线时它们隐藏或不显示，重连后鼠标要等你
-  再动一次才回来——这是刻意的，我们不加心跳去假装「立刻知道对方离线」。
-- **中文输入法组合期间不框选、不批量删除。** 组合中视图与文档可能暂时不一致，这时
-  跳过测量而不是猜位置。
-
-## 连接状态的含义
-
-界面只显示三种状态，它们都**不是**保存凭证：
-
-| 显示 | 实际含义 |
-| --- | --- |
-| 正在打开… | 正在校验文档并恢复本地缓存 |
-| 正在连接… | WebSocket 尚未就绪 |
-| 已连接 | WebSocket 已建立，初始同步已完成 |
-| 连接中断，可继续编辑 | 网络断了；本地缓存内容仍可读写 |
-
-**「已连接」不代表某次输入已经写入磁盘。** 库的 `synced` 事件说明初始内容已同步，
-不说明之后的每一笔修改都已被服务端提交。因此界面不显示「服务端已保存」，也没有队列
-长度、确认计数这类数字。若将来确实需要逐笔落盘回执，应单独立项，而不是把旧的
-ACK / 屏障系统加回来。
-
-服务端侧同理：库的写入是异步调度的（`stop` 也不能当作写入排空），所以正常停机时应用
-会**额外做一次完整状态写入**，并给它 10 秒上限；失败会抛错并记录，不会谎报保存成功。
-
-## 保存与丢失的边界
-
-这套方案是「自动保存 + 本地缓存」，不是逐笔落盘回执。以下情况可能影响最新修改，
-文档如实说明：
-
-- 页面在本地写入完成前被强制结束（缓存写入是批量调度的）；
-- 浏览器清除了站点存储；
-- 设备磁盘故障；
-- 服务端在异步写入完成前被强制结束（`taskkill /F`、断电）；
-- 断网期间在**没有**本地缓存的新设备上打开文档——那里只有服务端的内容。
-
-以下情况**已经覆盖**并有自动化用例：
-
-- 断线期间继续编辑，重连后两端的修改都保留；
-- 只断 WebSocket 时刷新，正文从本地缓存恢复；
-- 服务端正常停机后，新的浏览器上下文仍能读到数据库内容；
-- 服务端被强制结束进程后，此前已写入的内容仍能读到；
-- 超过 100 次更新（库的检查点间隔）之后重启，内容完整；
-- 存储不可用时创建文档返回 503，界面给出可操作提示，不无限 loading；
-- 本地缓存不可用时明确报错并可重试，不会把正文清空成空文档。
-
-## 旧数据
-
-2026-09-21 的首版使用自研协议，数据放在 `backend/data/`（不是 `v2/`），浏览器缓存使用
-另一套命名空间。新旧协议不兼容。
-
-**旧数据库与旧浏览器缓存全部保留，不做自动删除，也不自动迁移。** 旧链接不会自动变成
-新文档。如需沿用旧文档，需要另做一次显式迁移，不在本版本内。
-
-## 核心文件
-
-```text
-backend/app/documents.py      文档目录（sqlite3）与服务端种子构造
-backend/app/collaboration.py  库对象组装、先恢复再开放同步、停机写回
-backend/app/main.py           应用工厂、lifespan、HTTP 与 WebSocket 路由、可选静态目录
-frontend/src/documents/api.ts       HTTP 文档接口
-frontend/src/documents/session.ts   三个库对象的生命周期与连接状态
-frontend/src/documents/backup.ts    备份格式、校验、编解码与纯文本预览
-frontend/src/documents/DocumentBackup.vue  导出、预览、打开原文档、确认合并
-frontend/src/offline.ts       页面外壳缓存的注册与状态（不接触正文）
-frontend/src/clipboard.ts     剪贴板能力检测与成功/失败结果
-frontend/src/editor/EditorPane.vue  编辑器实例、剪贴板、撤销/重做
-frontend/src/editor/extensions.ts   最小编辑 schema 与 Collaboration
-frontend/src/App.vue                页面入口与路由（含打开代次）
-backend/tests/uvicorn_launcher.py   仅测试使用的启动器，支持从标准输入请求正常停止
-frontend/e2e/fixtures.ts            开发套件：每个用例独立的后端进程与浏览器上下文
-frontend/e2e-production/fixtures.ts 生产套件：真实构建产物与 setOffline 离线验收
-scripts/dev.ps1                     开发启动入口（强制结束语义）
-scripts/serve.ps1                   构建版前台启动，支持显式 TLS，Ctrl+C 正常停止
-scripts/verify.ps1                  有序运行全部自动验证（含生产套件）
-```
-
-不要指望在这些文件里找到：消息编解码、发送队列、事务标识、确认语义、握手屏障、
-候选文档克隆、手写 IndexedDB 日志。这些要么由库承担，要么已经删除。
-
-## 已知限制
-
-- **单进程、受控环境**：一个 Python 进程管理所有文档房间，只监听回环地址。链接即权限，
-  没有账号与访问控制。公开部署前需要单独设计权限、访问限制与运维。
-- **无远端光标、无在线名单、无历史版本**：首版范围之外。
-- **撤销范围**：刷新页面后保留正文，但不保留上一会话的撤销栈。
-- **离线页面缓存**：构建版会缓存页面外壳，整站断网后刷新仍能打开。但正文能否离线看到，
-  取决于当前浏览器在当前地址下是否打开过该文档并写过本地缓存；首次访问必须联网。
-  局域网 HTTP 不是安全上下文，完整离线刷新需要可信 HTTPS，见
-  [本地与局域网运行指南](docs/local-and-lan.md)。
-- **换地址不共享本地数据**：浏览器按 origin 隔离存储，改协议/主机名/端口后未同步的内容
-  需要用页面底部的备份面板导出再导入。
-- **不提供「立即更新」**：检测到新版本只提示，结束编辑后关闭全部页面重新打开才更新，
-  避免自动刷新打断正在写的人。
-- **pycrdt 索引式编辑**：pycrdt 0.14.5 的 `del text[a:b]` 按 Python 码点计数，与 Yjs 的
-  UTF-16 码元不一致，在含非 BMP 字符（emoji 等）的文本上会误删或抛 Rust panic。
-  真实客户端的编辑由浏览器里的 Yjs 完成，服务端只搬运二进制更新，因此不受影响；
-  但**从 Python 直接按索引改正文是不安全的**。该边界记录在
-  `backend/tests/test_library_integration.py` 的相应用例说明里。
-- **中文输入法**：组合输入阶段的行为需要在真实系统输入法下人工验证，见
-  [`docs/manual-ime-checklist.md`](docs/manual-ime-checklist.md)。该表尚未执行，不使用
-  合成 composition 事件冒充人工通过。
-
-## 与 2026-09-21 首版的区别
-
-首版自研了 WebSocket 协议（JSON 信封 + Base64）、txId 去重、ACK 屏障、事务重放队列与
-手写 IndexedDB 日志。这些都被替换成现成库：协议用标准 Yjs 二进制格式，去重与幂等由
-CRDT 更新本身的幂等性承担，断线补齐由 `y-websocket` 的状态向量交换承担，本地缓存交给
-`y-indexeddb`。
-
-代价是放弃了「每次输入都经过数据库提交确认后才通知浏览器」这个语义。换来的是核心代码
-大幅缩小：承担同步与保存职责的代码从约 1980 行（`provider.ts` 637、`room.py` 271、
-`protocol.py` 254、`store.py` 252、`journal.ts` 249、`protocol.ts` 228、`save-state.ts` 44、
-`crdt.py` 43）降到约 620 行（`collaboration.py` 288、`session.ts` 191、
-`documents.py` 136），并且全部是可以逐行读完的库调用与生命周期管理。
-
-当前整个应用源码（不含测试、样式与文档）约 1200 行。
+更多说明：[文档导航](docs/README.md) · [演示步骤](docs/demo.md) · [局域网与迁移](docs/local-and-lan.md)。历史设计中的本机路径与分支状态不适用于 GitHub 克隆目录，当前行为以源码、测试和本 README 为准。
