@@ -8,6 +8,7 @@ import {
   type OverlayContext,
   type ParagraphRef,
   type ParagraphSnapshot,
+  type PointerPosition,
 } from './paragraphs'
 
 /**
@@ -48,8 +49,7 @@ export type RemotePointer = {
 }
 
 /** Awareness 里的鼠标字段。 */
-type PointerState = {
-  paragraph: ParagraphRef | null
+type PointerState = ({ paragraph: ParagraphRef } | { paragraph: null; space: 'surface' }) & {
   x: number
   y: number
 }
@@ -64,9 +64,9 @@ const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/
 
 function isPointerState(value: unknown): value is PointerState {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as { paragraph?: unknown; x?: unknown; y?: unknown }
+  const candidate = value as { paragraph?: unknown; space?: unknown; x?: unknown; y?: unknown }
   if (candidate.paragraph !== null && !isParagraphRef(candidate.paragraph)) return false
-  if (candidate.paragraph === null) return false
+  if (candidate.paragraph === null && candidate.space !== 'surface') return false
   if (typeof candidate.x !== 'number' || typeof candidate.y !== 'number') return false
   if (!Number.isFinite(candidate.x) || !Number.isFinite(candidate.y)) return false
   return candidate.x >= 0 && candidate.x <= 1 && candidate.y >= 0 && candidate.y <= 1
@@ -77,7 +77,8 @@ function isPointerState(value: unknown): value is PointerState {
  *
  * 发布的是「所在段落的引用 + 段内归一化坐标」，不是原始 clientX/clientY：接收端
  * 排版不同，只有按自己那份段落矩形还原才画得对。这也意味着它表达的是段内**大致
- * 位置**，不是精确字符位置——精确位置由文字光标负责。
+ * 位置**，不是精确字符位置——精确位置由文字光标负责。未命中段落的留白按整个
+ * 输入区域的比例定位，因此没有正文时也能看到鼠标。
  */
 export function usePresence(context: OverlayContext): Presence {
   const pointers = ref<RemotePointer[]>([])
@@ -100,8 +101,8 @@ export function usePresence(context: OverlayContext): Presence {
     // 移动鼠标（没有正文事务）就不会再触发测量，指针会一直发不出去——表现为
     // 「中文输入结束后鼠标指针不再显示，调整窗口才恢复」。
     const snapshot = readParagraphs(editor, context.doc)
-    if (snapshot === null) return
-    paragraphs.value = snapshot
+    if (snapshot !== null) paragraphs.value = snapshot
+    // 空白区域的指针不依赖段落快照；组合输入期间也可以投影。
     render(surface)
   }
 
@@ -115,13 +116,13 @@ export function usePresence(context: OverlayContext): Presence {
 
   const render = (surface: HTMLElement): void => {
     const current = paragraphs.value
-    if (current === null || !context.connected.value) {
+    if (!context.connected.value) {
       pointers.value = []
       return
     }
 
     const byRef = new Map(
-      current.map((snapshot) => [
+      (current ?? []).map((snapshot) => [
         `${snapshot.ref.type.client}:${snapshot.ref.type.clock}`,
         snapshot,
       ]),
@@ -131,12 +132,12 @@ export function usePresence(context: OverlayContext): Presence {
     for (const [clientId, state] of context.provider.awareness.getStates()) {
       if (clientId === context.doc.clientID) continue
       const pointer = (state as Record<string, unknown>).pointer
-      if (!isPointerState(pointer) || pointer.paragraph === null) continue
+      if (!isPointerState(pointer)) continue
 
       const user = (state as Record<string, unknown>).user as
         | { name?: unknown; color?: unknown }
         | undefined
-      const paragraph = byRef.get(
+      const paragraph = pointer.paragraph === null ? null : byRef.get(
         `${pointer.paragraph.type.client}:${pointer.paragraph.type.clock}`,
       )
       // 尚未收到对应正文时暂不画；正文更新后会重新测量并补上。
@@ -176,7 +177,12 @@ export function usePresence(context: OverlayContext): Presence {
       'pointer',
       position === null
         ? null
-        : { paragraph: position.ref, x: position.x, y: position.y },
+        : {
+            paragraph: position.ref,
+            ...(position.ref === null ? { space: 'surface' } : {}),
+            x: position.x,
+            y: position.y,
+          },
     )
   }
 
@@ -190,14 +196,14 @@ export function usePresence(context: OverlayContext): Presence {
       return
     }
 
-    const current = paragraphs.value
-    if (current === null) {
-      // 还没有可用快照（例如首帧恰好落在组合输入期间）：安排一次测量，
-      // 下一次移动就能正常定位。
-      schedule()
+    const surface = context.surface.value
+    if (surface === null) return
+    if (paragraphs.value === null) schedule()
+    const position = locatePointer(paragraphs.value ?? [], event.clientX, event.clientY, surface)
+    if (position === null) {
+      clearLocalPointer()
       return
     }
-    const position = locatePointer(current, event.clientX, event.clientY)
     lastPosition = position
     if (pendingPublish !== null) return
 
@@ -293,5 +299,3 @@ export function usePresence(context: OverlayContext): Presence {
 
   return { pointers, onPointerMove, onPointerLeave }
 }
-
-type PointerPosition = { ref: ParagraphRef; x: number; y: number }

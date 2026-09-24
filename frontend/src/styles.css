@@ -372,7 +372,7 @@ h1 {
   pointer-events: none;
 }
 
-/* 远端鼠标：只表示所在段落内的大致位置，不是精确字符位置。 */
+/* 远端鼠标：表示输入区域内的大致位置；精确字符位置由文字光标表达。 */
 .remote-pointer {
   position: absolute;
   transform: translate(-3px, -3px);

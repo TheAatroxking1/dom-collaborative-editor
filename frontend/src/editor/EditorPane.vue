@@ -329,7 +329,7 @@ async function copyBody(): Promise<void> {
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove($event), onSelectPointerMove($event)"
       @pointerup="onPointerUp"
-      @pointercancel="onPointerCancel"
+      @pointercancel="onPointerCancel($event), onPointerLeave()"
       @pointerleave="onPointerLeave"
       @click.capture="onClickCapture"
       @keydown="onKeyDown"

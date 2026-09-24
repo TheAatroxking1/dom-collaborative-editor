@@ -47,9 +47,9 @@ export type OverlayRect = {
   height: number
 }
 
-/** 指针在本机段落内的归一化位置，x/y 都在 [0,1]。 */
+/** 指针的归一化位置；ref 为 null 表示相对于整个输入区域。 */
 export type PointerPosition = {
-  ref: ParagraphRef
+  ref: ParagraphRef | null
   x: number
   y: number
 }
@@ -184,17 +184,23 @@ export function measureParagraph(
 }
 
 /**
- * 把屏幕坐标换算成「某个段落内的归一化位置」。
+ * 段落内优先按段落定位，其余留白按整个输入区域定位。
  *
- * 原始 clientX/clientY 只在发送端本机有效；接收端排版不同，必须按自己那份段落矩形
- * 还原。这里回答的是段落内的**大致位置**，不是精确字符位置——字符位置由文字光标
- * 负责。
+ * 原始 clientX/clientY 只在发送端本机有效；接收端按自己的段落或输入区域矩形
+ * 还原大致位置。精确字符位置由文字光标负责。
  */
 export function locatePointer(
   paragraphs: ParagraphSnapshot[],
   clientX: number,
   clientY: number,
+  surface: HTMLElement,
 ): PointerPosition | null {
+  const area = surface.getBoundingClientRect()
+  // 段落框选会捕获鼠标，出框后仍有 pointermove；不能把它限制到边缘继续显示。
+  if (
+    area.width <= 0 || area.height <= 0 || clientX < area.left || clientX > area.right
+    || clientY < area.top || clientY > area.bottom
+  ) return null
   for (const snapshot of paragraphs) {
     const rect = snapshot.element.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) continue
@@ -212,12 +218,16 @@ export function locatePointer(
       y: (clientY - rect.top) / rect.height,
     }
   }
-  return null
+  return {
+    ref: null,
+    x: (clientX - area.left) / area.width,
+    y: (clientY - area.top) / area.height,
+  }
 }
 
 /** 接收端按本机矩形还原归一化位置；坐标无效时返回 null。 */
 export function projectPointer(
-  paragraph: ParagraphSnapshot,
+  paragraph: ParagraphSnapshot | null,
   host: HTMLElement,
   x: number,
   y: number,
@@ -225,7 +235,7 @@ export function projectPointer(
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null
   if (x < 0 || x > 1 || y < 0 || y > 1) return null
 
-  const rect = paragraph.element.getBoundingClientRect()
+  const rect = (paragraph?.element ?? host).getBoundingClientRect()
   const hostRect = host.getBoundingClientRect()
   if (rect.width <= 0 || rect.height <= 0) return null
 
