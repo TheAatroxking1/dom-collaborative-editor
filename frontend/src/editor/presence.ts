@@ -87,6 +87,7 @@ export function usePresence(context: OverlayContext): Presence {
   let frame: number | null = null
   let pendingPublish: ReturnType<typeof setTimeout> | null = null
   let lastPosition: PointerPosition | null = null
+  let lastClientPoint: { x: number; y: number } | null = null
   let disposed = false
 
   /** 重新读取段落快照并重画面。用一帧合并，不每帧永久轮询。 */
@@ -102,6 +103,8 @@ export function usePresence(context: OverlayContext): Presence {
     // 「中文输入结束后鼠标指针不再显示，调整窗口才恢复」。
     const snapshot = readParagraphs(editor, context.doc)
     if (snapshot !== null) paragraphs.value = snapshot
+    // 鼠标可以静止，但打字、自动滚动或缩放会改变它下方的段落和空白区域。
+    refreshLocalPointer()
     // 空白区域的指针不依赖段落快照；组合输入期间也可以投影。
     render(surface)
   }
@@ -128,6 +131,7 @@ export function usePresence(context: OverlayContext): Presence {
       ]),
     )
 
+    const surfaceRect = surface.getBoundingClientRect()
     const next: RemotePointer[] = []
     for (const [clientId, state] of context.provider.awareness.getStates()) {
       if (clientId === context.doc.clientID) continue
@@ -145,6 +149,9 @@ export function usePresence(context: OverlayContext): Presence {
 
       const rect = projectPointer(paragraph, surface, pointer.x, pointer.y)
       if (rect === null) continue
+      const clientX = surfaceRect.left + rect.left
+      const clientY = surfaceRect.top + rect.top
+      if (clientX < 0 || clientX >= window.innerWidth || clientY < 0 || clientY >= window.innerHeight) continue
 
       next.push({
         clientId,
@@ -167,10 +174,18 @@ export function usePresence(context: OverlayContext): Presence {
       pendingPublish = null
     }
     lastPosition = null
-    context.provider.awareness.setLocalStateField('pointer', null)
+    lastClientPoint = null
+    publish(null)
   }
 
   const publish = (position: PointerPosition | null): void => {
+    const current = context.provider.awareness.getLocalState()?.pointer
+    if (position === null && current == null) return
+    // Awareness 的相同值仍会发 update。测量也由 Awareness 触发，写入前去重以免循环广播。
+    if (position !== null && isPointerState(current)
+      && current.x === position.x && current.y === position.y
+      && current.paragraph?.type.client === position.ref?.type.client
+      && current.paragraph?.type.clock === position.ref?.type.clock) return
     // 字段名必须与 isPointerState 读取的一致：线上的形状是 { paragraph, x, y }。
     // 内部类型用 ref 命名更贴近语义，转换只在这一处。
     context.provider.awareness.setLocalStateField(
@@ -186,7 +201,7 @@ export function usePresence(context: OverlayContext): Presence {
     )
   }
 
-  const onPointerMove = (event: PointerEvent): void => {
+  const refreshLocalPointer = (): void => {
     if (disposed) return
 
     // 断线期间不发布指针：Awareness 会在重连时把最后的本地状态重新广播出去，
@@ -196,10 +211,10 @@ export function usePresence(context: OverlayContext): Presence {
       return
     }
 
+    if (lastClientPoint === null) return
     const surface = context.surface.value
     if (surface === null) return
-    if (paragraphs.value === null) schedule()
-    const position = locatePointer(paragraphs.value ?? [], event.clientX, event.clientY, surface)
+    const position = locatePointer(paragraphs.value ?? [], lastClientPoint.x, lastClientPoint.y, surface)
     if (position === null) {
       clearLocalPointer()
       return
@@ -212,6 +227,13 @@ export function usePresence(context: OverlayContext): Presence {
       if (disposed) return
       publish(lastPosition)
     }, POINTER_THROTTLE_MS)
+  }
+
+  const onPointerMove = (event: PointerEvent): void => {
+    if (disposed) return
+    lastClientPoint = { x: event.clientX, y: event.clientY }
+    if (paragraphs.value === null) schedule()
+    refreshLocalPointer()
   }
 
   const onPointerLeave = (): void => {
@@ -292,7 +314,7 @@ export function usePresence(context: OverlayContext): Presence {
     window.removeEventListener('blur', onWindowBlur)
     document.removeEventListener('visibilitychange', onVisibility)
     // 共享 Awareness 可能已被会话置空；再置一次不会复活离线身份。
-    context.provider.awareness.setLocalStateField('pointer', null)
+    publish(null)
   })
 
   schedule()

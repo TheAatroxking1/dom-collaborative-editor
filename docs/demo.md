@@ -41,7 +41,9 @@ powershell.exe -NoProfile -File scripts/serve.ps1
 
 两端都需加载新版页面才能识别新增的 `surface` 指针消息。构建版先重新构建并重启服务，再刷新双方页面；有旧页面缓存时，结束编辑后关闭全部页面再重新打开。
 
-对应：`frontend/e2e/presence.spec.ts`、`paragraph-selection.spec.ts`。
+滚动验收：A 将鼠标留在编辑区内，连续输入多行让页面自动向下滚动。B 仍停在顶部时，屏幕外的远端鼠标不显示；B 自己滚到对应区域后应看到鼠标，移回顶部后隐藏。双方滚动位置互不影响，A 鼠标静止时位置也应随布局重新计算。
+
+对应：`frontend/e2e/presence.spec.ts`、`pointer-scroll.spec.ts`、`paragraph-selection.spec.ts`。
 
 ## 3. 断线继续写与重连
 
