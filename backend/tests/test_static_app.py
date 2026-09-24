@@ -132,7 +132,14 @@ def test_missing_static_directory_fails_clearly(tmp_path: Path):
 
 def test_websocket_still_connects_with_static_directory(tmp_path: Path):
     """静态入口不得影响协作 WebSocket。"""
-    from pycrdt import Doc, XmlFragment, create_sync_message, handle_sync_message
+    from pycrdt import (
+        Doc,
+        XmlFragment,
+        YMessageType,
+        YSyncMessageType,
+        create_sync_message,
+        handle_sync_message,
+    )
 
     dist = make_dist(tmp_path)
     with TestClient(create_app(tmp_path / "data", static_directory=dist)) as client:
@@ -140,12 +147,16 @@ def test_websocket_still_connects_with_static_directory(tmp_path: Path):
         with client.websocket_connect(f"/ws/documents/{document_id}") as socket:
             doc = Doc()
             socket.send_bytes(create_sync_message(doc))
-            for _ in range(2):
+            # 按帧类型握手，不假定帧数：服务器可能先补发一帧 awareness。
+            for _ in range(5):
                 raw = socket.receive_bytes()
-                if raw and raw[0] == 0:
-                    reply = handle_sync_message(raw[1:], doc)
-                    if reply is not None:
-                        socket.send_bytes(reply)
+                if not raw or raw[0] != YMessageType.SYNC:
+                    continue
+                reply = handle_sync_message(raw[1:], doc)
+                if reply is not None:
+                    socket.send_bytes(reply)
+                if raw[1] == YSyncMessageType.SYNC_STEP2:
+                    break
             assert len(doc.get("body", type=XmlFragment).children) == 1
 
 

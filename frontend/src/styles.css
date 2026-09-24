@@ -102,6 +102,12 @@ h1 {
   cursor: default;
 }
 
+.toolbar-button {
+  /* 单行且不参与收缩：按钮高度恒定，工具栏才不会因为文字换行而增高。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .document-header {
   display: flex;
   justify-content: space-between;
@@ -171,6 +177,16 @@ h1 {
   gap: 0.5rem;
   margin-bottom: 0.5rem;
   min-height: 2.4rem;
+  /* 窄窗口下按钮文字会换行，工具栏随之长高；而选区一出现就多出几个按钮，于是
+     「拖动中」比「拖动前」更高——正文被往下推，拖动框选的参考系跟着漂移，
+     拖过的段落会算少。固定为单行、超出部分横向滚动，并且隐藏滚动条（它自己
+     也会改变高度），工具栏高度就与窗口宽度、与选区数量都无关了。 */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.editor-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .editor-surface {
@@ -397,6 +413,9 @@ h1 {
 }
 
 .selection-count {
+  /* 与按钮同样单行、不收缩，工具栏高度才不会被它改变。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-weight: 600;
 }
 

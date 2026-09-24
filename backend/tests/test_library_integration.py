@@ -21,6 +21,7 @@ from pycrdt import (
     XmlFragment,
     XmlText,
     YMessageType,
+    YSyncMessageType,
     create_sync_message,
     create_update_message,
     handle_sync_message,
@@ -46,25 +47,34 @@ class YjsClient:
         self.socket = socket
         self.doc = Doc()
 
-    def handshake(self, frames: int = 2) -> None:
+    def handshake(self, max_frames: int = 5) -> None:
         """发送自己的 step1，并处理服务器发来的握手帧。
 
         服务器会先推来它自己的 step1，我们用 step2 回复；随后接到它针对我们
-        step1 的 step2。两帧之后双方状态向量一致。
+        step1 的 step2。之后双方状态向量一致。
+
+        按帧**类型**处理而不是按固定帧数：服务器可能先补发一帧 awareness，
+        真实客户端对顺序没有要求，测试也不该依赖顺序。
         """
         self.socket.send_bytes(create_sync_message(self.doc))
-        self.pump(frames)
+        for _ in range(max_frames):
+            if self.pump_one() == YSyncMessageType.SYNC_STEP2:
+                return
 
     def pump(self, frames: int = 1) -> None:
         for _ in range(frames):
-            raw = self.socket.receive_bytes()
-            if not raw:
-                continue
-            if raw[0] == YMessageType.SYNC:
-                reply = handle_sync_message(raw[1:], self.doc)
-                if reply is not None:
-                    self.socket.send_bytes(reply)
-            # awareness 帧（远端光标）与本次持久化验证无关，直接跳过。
+            self.pump_one()
+
+    def pump_one(self):
+        """读取并处理一帧，返回它的同步子类型（非同步帧返回 None）。"""
+        raw = self.socket.receive_bytes()
+        if not raw or raw[0] != YMessageType.SYNC:
+            # awareness 帧（远端光标、鼠标与段落选区）与本次正文验证无关。
+            return None
+        reply = handle_sync_message(raw[1:], self.doc)
+        if reply is not None:
+            self.socket.send_bytes(reply)
+        return raw[1]
 
     def edit(self, apply) -> bytes:
         """做一次本地编辑，并把这次编辑产生的差量发给服务端。
@@ -307,3 +317,67 @@ def test_plain_text_node_survives_reload(app_with_data):
         peer.handshake()
         peer.edit(lambda doc: doc.get("probe", type=Text).insert(0, "探针🙂"))
         assert peer.doc.get("probe", type=Text).to_py() == "探针🙂"
+
+
+def test_new_client_receives_existing_awareness(app_with_data):
+    """后加入的连接要能立刻看到已存在的临时状态。
+
+    库只在 awareness 变化时广播。新连接自己不带别人的状态、服务端状态也没变，
+    于是要等别人下次动鼠标或改选区才收得到——表现为「新设备看不到已有光标，
+    过一会儿才冒出来」。服务端必须在它加入时补发一次当前快照。
+
+    用一个「见证者」连接确认服务端已经应用了这条状态，再让真正的后加入者进来，
+    否则测试会因为「状态可能还没到服务端」而不稳定。
+    """
+    from pycrdt import Awareness, YMessageType, create_awareness_message, read_message
+
+    client, _ = app_with_data
+    document_id = create_document(client)
+
+    with client.websocket_connect(DOCUMENT_PATH.format(document_id=document_id)) as author_socket:
+        with client.websocket_connect(DOCUMENT_PATH.format(document_id=document_id)) as witness_socket:
+            author = YjsClient(author_socket)
+            witness = YjsClient(witness_socket)
+            author.handshake()
+            witness.handshake()
+
+            presence = Awareness(author.doc)
+            presence.set_local_state({"user": {"name": "访客甲", "color": "#2563eb"}})
+            update = presence.encode_awareness_update([author.doc.client_id])
+            author_socket.send_bytes(create_awareness_message(update))
+
+            # 见证者收到转发，说明服务端已经应用了这条状态。
+            forwarded = receive_awareness(witness_socket)
+            assert forwarded is not None, "服务端没有应用并转发这条 awareness"
+
+            # 现在才接入后加入者。
+            with client.websocket_connect(
+                DOCUMENT_PATH.format(document_id=document_id)
+            ) as late_socket:
+                late = YjsClient(late_socket)
+                late_socket.send_bytes(create_sync_message(late.doc))
+
+                snapshot = receive_awareness(late_socket, while_handshaking=late)
+                assert snapshot is not None, "新连接没有收到已有的 awareness 状态"
+
+                observer = Awareness(late.doc)
+                # 帧是 [AWARENESS 类型][长度][payload]，先去掉类型与长度前缀。
+                observer.apply_awareness_update(read_message(snapshot[1:]), None)
+                assert author.doc.client_id in observer.states
+                assert observer.states[author.doc.client_id]["user"]["name"] == "访客甲"
+                assert witness_socket is not None
+
+
+def receive_awareness(socket, max_frames: int = 5, while_handshaking=None):
+    """读取若干帧，返回第一帧 awareness；期间照常完成同步握手。"""
+    from pycrdt import YMessageType
+
+    for _ in range(max_frames):
+        raw = socket.receive_bytes()
+        if raw and raw[0] == YMessageType.AWARENESS:
+            return raw
+        if raw and raw[0] == YMessageType.SYNC and while_handshaking is not None:
+            reply = handle_sync_message(raw[1:], while_handshaking.doc)
+            if reply is not None:
+                socket.send_bytes(reply)
+    return None

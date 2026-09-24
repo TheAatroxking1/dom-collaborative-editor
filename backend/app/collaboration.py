@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from pycrdt import Doc
+from pycrdt import Doc, create_awareness_message
 from pycrdt.store import SQLiteYStore, YDocNotFound
 from pycrdt.websocket import WebsocketServer, YRoom
 
@@ -319,7 +319,31 @@ class Collaboration:
         只做收发与断开转换，不解析 Yjs 消息；accept 由调用方完成，这里不重复接受。
         """
         channel = ASGIWebsocket(websocket.receive, websocket.send, document_id)
+        # 先补齐已有的临时状态，再进入库的服务循环。
+        await self._send_current_awareness(document_id, channel)
         await self._server.serve(channel)
+
+    async def _send_current_awareness(self, document_id: str, channel: Any) -> None:
+        """把房间里已有的 Awareness 状态补给这条新连接。
+
+        库只在 awareness **发生变化**时广播。新加入的连接自己不携带别人的状态，服务端
+        的状态也没变，于是一直到别人下次移动鼠标或改选区之前什么都收不到——表现为
+        「后加入的设备看不到已有光标和框选，过一会儿才冒出来」。
+
+        这里主动把当前快照发给它。发不出去不影响后续服务：这条连接会在库的循环里
+        正常收发。
+        """
+        room = self._server.rooms.get(document_id)
+        if room is None:
+            return
+        client_ids = list(room.awareness.states)
+        if not client_ids:
+            return
+        try:
+            update = room.awareness.encode_awareness_update(client_ids)
+            await channel.send(create_awareness_message(update))
+        except Exception as error:  # noqa: BLE001 - 补发失败不该影响连接本身
+            self._log.warning("补发文档 %s 的 awareness 失败：%s", document_id, error)
 
     # --- 存储与失败处理 ---------------------------------------------------
 

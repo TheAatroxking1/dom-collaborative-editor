@@ -59,6 +59,13 @@ async function selectedCount(page: Page): Promise<string> {
   return page.locator('[data-selection-count]').innerText()
 }
 
+/** 工具栏高度。它必须与「有没有选区」无关：一变高就会把正文推下去。 */
+async function toolbarHeight(page: Page): Promise<number> {
+  const box = await page.locator('.editor-toolbar').boundingBox()
+  if (box === null) throw new Error('工具栏没有布局矩形')
+  return box.height
+}
+
 async function prepareThreeParagraphs(page: Page): Promise<void> {
   await focusEditor(page)
   await pasteText(page, '第一段\n第二段\n第三段')
@@ -186,6 +193,33 @@ test.describe('拖动选段', () => {
   })
 })
 
+test.describe('窄窗口下的框选', () => {
+  // 工具栏一旦因为按钮文字换行而长高，拖动过程中正文就被往下推，「拖动矩形」与
+  // 「段落矩形」不再共用同一个参考系，拖过的段落就会算少。窄窗口下选区一出现就
+  // 多出几个按钮，正好触发这条路径。
+  for (const width of [700, 390]) {
+    test(`窗口宽 ${width}px 时拖过三段仍然全选中`, async ({ browser, backend }) => {
+      const documentId = await backend.createDocument()
+      const context = await browser.newContext({ viewport: { width, height: 720 } })
+      const page = await context.newPage()
+      try {
+        await openDocumentAt(page, documentId)
+        await prepareThreeParagraphs(page)
+
+        const before = await toolbarHeight(page)
+        await dragParagraphs(page, 0, 2)
+
+        await expect.poll(() => selectedCount(page)).toBe('已选 3 段')
+        await expect(page.locator('[data-local-paragraph-selection]')).toHaveCount(3)
+        // 直接盯住根因：工具栏高度不能随选区出现而变化。
+        expect(await toolbarHeight(page)).toBe(before)
+      } finally {
+        await context.close()
+      }
+    })
+  }
+})
+
 test.describe('段落引用的身份', () => {
   test('另一端在前面插入新段，本机选中的仍是原来那两段', async ({
     first,
@@ -290,6 +324,26 @@ test.describe('批量复制与删除', () => {
 
     await first.getByRole('button', { name: '重做', exact: true }).click()
     await expect.poll(() => editorText(second)).toBe('保留')
+  })
+
+  test('框选后按 Delete 删除，焦点仍在外壳上时 Ctrl+Z 也能撤销', async ({
+    first,
+    openDocument,
+  }) => {
+    await openDocument(first)
+    await prepareThreeParagraphs(first)
+
+    await dragParagraphs(first, 0, 1)
+    await expect.poll(() => selectedCount(first)).toBe('已选 2 段')
+
+    // 拖动结束后焦点落在外壳上，删除走的是外壳上的快捷键。
+    await first.keyboard.press('Delete')
+    await expect.poll(() => editorText(first)).toBe('第三段')
+    await expect(first.locator('[data-selection-count]')).toHaveCount(0)
+
+    // 焦点仍在外壳上：撤销必须被转发给编辑器，否则这里毫无反应。
+    await first.keyboard.press('Control+z')
+    await expect.poll(() => editorText(first)).toBe('第一段\n第二段\n第三段')
   })
 
   test('复制所选段落保留顺序、换行与空段，且不移除选区', async ({ first, openDocument }) => {

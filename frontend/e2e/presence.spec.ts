@@ -1,3 +1,5 @@
+import type { Editor } from '@tiptap/core'
+
 import {
   editorText,
   expect,
@@ -178,6 +180,50 @@ test.describe('协作者鼠标指针', () => {
     // 移到正文之外：对端不应再看到指针。
     await first.mouse.move(2, 2)
     await expect(second.locator('[data-remote-pointer]')).toHaveCount(0, { timeout: 20_000 })
+  })
+
+  test('中文组合输入期间断线也立即隐藏远端指针', async ({
+    backend,
+    first,
+    second,
+    openDocument,
+  }) => {
+    const documentId = await openDocument(first)
+    await focusEditor(first)
+    await first.keyboard.insertText('正文')
+    await openDocumentAt(second, documentId)
+    await expect.poll(() => editorText(second)).toBe('正文')
+
+    await focusEditor(first)
+    await first.keyboard.press('End')
+    const box = await second.locator('.editor-body > p').first().boundingBox()
+    if (box === null) throw new Error('待指向段落没有布局矩形')
+    await second.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await expect(first.locator('[data-remote-pointer]')).toHaveCount(1)
+
+    // 由 Chromium 产生组合输入事件；保持候选文字尚未提交，再让连接真实断开。
+    const cdp = await first.context().newCDPSession(first)
+    const composing = () =>
+      first.locator('.editor-body').evaluate(
+        (element) => (element as HTMLElement & { editor: Editor }).editor.view.composing,
+      )
+    try {
+      await cdp.send('Input.imeSetComposition', {
+        text: '中文', selectionStart: 2, selectionEnd: 2,
+      })
+      await expect.poll(composing).toBe(true)
+      await backend.kill()
+      await expect(first.getByRole('status')).not.toHaveText('已连接')
+      await expect.poll(composing).toBe(true)
+      await expect(first.locator('[data-remote-pointer]')).toHaveCount(0)
+
+      await cdp.send('Input.insertText', { text: '中文' })
+      await expect.poll(composing).toBe(false)
+      await expect.poll(() => editorText(first)).toBe('正文中文')
+      await expect(first.locator('[data-remote-pointer]')).toHaveCount(0)
+    } finally {
+      await cdp.detach()
+    }
   })
 
   test('断线隐藏远端指针、不影响本地编辑，重连后要等新的移动', async ({

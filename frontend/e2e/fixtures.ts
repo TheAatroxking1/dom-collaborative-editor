@@ -15,17 +15,17 @@ const READY_POLL_INTERVAL_MS = 100
 const READY_TIMEOUT_MS = 30_000
 const SHUTDOWN_TIMEOUT_MS = 20_000
 
-async function waitForHealth(origin: string, deadline: number): Promise<void> {
-  for (;;) {
-    try {
-      const response = await fetch(`${origin}/api/health`)
-      if (response.ok) return
-    } catch {
-      // 还没开始监听，继续轮询。
-    }
-    if (Date.now() > deadline) throw new Error(`后端未在预期时间内就绪：${origin}`)
-    await new Promise((done) => setTimeout(done, READY_POLL_INTERVAL_MS))
-  }
+/** 正常停止的结果。超时、非零退出与信号结束都是不同的异常，调用方要分别判断。 */
+export type ShutdownResult = {
+  exited: boolean
+  code: number | null
+  /** 被信号结束时是信号名；正常退出为 null。 */
+  signal: NodeJS.Signals | null
+}
+
+/** 退出方式的可读描述：正常退出是退出码，被结束是信号名。 */
+function describeExit(code: number | null, signal: NodeJS.Signals | null): string {
+  return signal === null ? `退出码 ${String(code)}` : `被信号 ${signal} 结束`
 }
 
 /**
@@ -37,6 +37,9 @@ async function waitForHealth(origin: string, deadline: number): Promise<void> {
 export class BackendProcess {
   readonly dataDirectory: string
   private child: ChildProcess | null = null
+  /** 这个进程退出后记下的真实结果；null 表示它还没退出。 */
+  private finished: { code: number | null; signal: NodeJS.Signals | null } | null = null
+  private logLines: string[] = []
 
   private constructor(directory: string) {
     this.dataDirectory = directory
@@ -58,6 +61,11 @@ export class BackendProcess {
     return join(this.dataDirectory, 'updates.sqlite3')
   }
 
+  /** 服务端原始输出。停机判断失败时用它说明原因，不用猜。 */
+  get logs(): string {
+    return this.logLines.join('')
+  }
+
   private async spawn(): Promise<void> {
     const child = spawn(pythonExecutable, ['-m', 'tests.uvicorn_launcher'], {
       cwd: backendDirectory,
@@ -67,13 +75,48 @@ export class BackendProcess {
         COLLAB_PORT: String(BACKEND_PORT),
         PYTHONUTF8: '1',
       },
-      stdio: ['pipe', 'ignore', 'ignore'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.child = child
-    child.once('exit', () => {
+    this.finished = null
+    this.logLines = []
+    for (const stream of [child.stdout, child.stderr]) {
+      stream?.on('data', (chunk: Buffer) => {
+        this.logLines.push(chunk.toString('utf8'))
+      })
+    }
+    child.once('exit', (code, signal) => {
+      this.finished = { code, signal }
       if (this.child === child) this.child = null
     })
-    await waitForHealth(BACKEND_ORIGIN, Date.now() + READY_TIMEOUT_MS)
+    await this.waitForReady(child)
+  }
+
+  /**
+   * 等健康检查通过；进程若在就绪前就退出，立刻带真实退出信息失败。
+   *
+   * 必须盯着进程本身而不是只看健康检查：端口会被上一个用例的进程短暂占用，
+   * 新进程绑定失败直接退出时，健康检查仍会对那个旧进程通过，用例于是对着一个
+   * 不是自己启动的服务跑完——结论自然不成立，而且看起来还像是正常通过。
+   */
+  private async waitForReady(child: ChildProcess): Promise<void> {
+    const deadline = Date.now() + READY_TIMEOUT_MS
+    for (;;) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(
+          `后端在就绪前就退出了（${describeExit(child.exitCode, child.signalCode)}）；` +
+            `服务端原始日志：\n${this.logs}`,
+        )
+      }
+      try {
+        const response = await fetch(`${BACKEND_ORIGIN}/api/health`)
+        if (response.ok) return
+      } catch {
+        // 还没开始监听，继续轮询。
+      }
+      if (Date.now() > deadline) throw new Error(`后端未在预期时间内就绪：${BACKEND_ORIGIN}`)
+      await new Promise((done) => setTimeout(done, READY_POLL_INTERVAL_MS))
+    }
   }
 
   private async waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
@@ -87,14 +130,27 @@ export class BackendProcess {
     })
   }
 
-  /** 请求正常停止并等待进程退出；返回 lifespan 是否走完了收尾流程。 */
-  async stopGracefully(): Promise<boolean> {
+  /**
+   * 请求正常停止并等待进程退出；返回真实退出结果。
+   *
+   * 返回退出码而不是布尔值：正常停机必须是退出码 0，只回答「退出了没有」会把
+   * 「写盘失败后非零退出」和「早就自己崩了」都算成正常停止。
+   */
+  async stopGracefully(): Promise<ShutdownResult> {
     const child = this.child
-    if (child === null) return true
+    if (child === null) {
+      // 进程已经不在了：返回记下的真实结果，不凭空报「退出码 0」。
+      const finished = this.finished
+      return finished === null
+        ? { exited: true, code: null, signal: null }
+        : { exited: true, code: finished.code, signal: finished.signal }
+    }
     child.stdin?.write('stop\n')
     const exited = await this.waitForExit(child, SHUTDOWN_TIMEOUT_MS)
+    const code = child.exitCode
+    const signal = child.signalCode
     if (exited) this.child = null
-    return exited
+    return { exited, code, signal }
   }
 
   /** 强制终止：只用于「崩溃」场景，不走应用清理流程。 */

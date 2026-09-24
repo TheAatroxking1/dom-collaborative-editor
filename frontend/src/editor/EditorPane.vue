@@ -197,10 +197,10 @@ function deleteSelection(): void {
  * 段落选区存在时的快捷键。
  *
  * 只在正文或已聚焦的外壳上生效，且不拦截输入框、文本框与其他交互控件；中文组合
- * 输入期间一律放行。撤销/重做继续交给既有协作历史，不在这里另建一套。
+ * 输入期间一律放行。撤销/重做转发给同一个编辑器实例，用的仍是既有的协作撤销栈，
+ * 不在这里另建一套。
  */
 function onKeyDown(event: KeyboardEvent): void {
-  if (selectedCount.value === 0) return
   if (editor.value?.view.composing === true) return
 
   const target = event.target as HTMLElement | null
@@ -211,11 +211,26 @@ function onKeyDown(event: KeyboardEvent): void {
   }
 
   const modifier = event.ctrlKey || event.metaKey
+
+  // 焦点停在正文外壳上时（框选结束时就是这种状态），键盘事件不会进入 ProseMirror
+  // 的键位表，撤销/重做会静默失效——按 Delete 删掉整段后按 Ctrl+Z 什么都不会发生。
+  // 这里把它转发给同一个编辑器实例，用的仍然是既有的协作撤销栈，不另建一套。
+  // 焦点已经在正文里时不插手，交给编辑器自己处理。
+  const editorDom = editor.value?.view.dom
+  if (modifier && editorDom !== undefined && target !== editorDom) {
+    const key = event.key.toLowerCase()
+    if (key === 'z' || key === 'y') {
+      event.preventDefault()
+      if (key === 'y' || event.shiftKey) redo()
+      else undo()
+      return
+    }
+  }
+
+  if (selectedCount.value === 0) return
+
   if (modifier && (event.key === 'c' || event.key === 'C')) {
     // 让原生 copy 事件填剪贴板，不在这里抢占。
-    return
-  }
-  if (modifier && (event.key === 'z' || event.key === 'Z' || event.key === 'y')) {
     return
   }
   if (modifier) return

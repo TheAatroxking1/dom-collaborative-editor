@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Editor } from '@tiptap/core'
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test'
 
 /**
@@ -45,10 +46,12 @@ export const ALTERNATE_ORIGIN = `http://localhost:${PRODUCTION_PORT}`
  */
 export const BUILD_B_MARKER = '<!-- build-b -->'
 
-/** 正常停止的结果。超时与非零退出都要让用例失败，所以这里带上退出码。 */
+/** 正常停止的结果。超时、非零退出与信号结束都要让用例失败，所以这里带上真实结果。 */
 export type ShutdownResult = {
   exited: boolean
   code: number | null
+  /** 被信号结束时是信号名；正常退出为 null。 */
+  signal: NodeJS.Signals | null
 }
 
 /** 把退出异常整理成可读信息，并附上服务端原始日志。 */
@@ -57,7 +60,11 @@ function describeShutdownFailure(result: ShutdownResult, logs: string): string |
     return `服务未在 ${SHUTDOWN_TIMEOUT_MS} ms 内正常退出；服务端原始日志：\n${logs}`
   }
   if (result.code !== 0) {
-    return `服务退出码为 ${String(result.code)}（期望 0）；服务端原始日志：\n${logs}`
+    const how =
+      result.signal === null
+        ? `退出码 ${String(result.code)}`
+        : `被信号 ${result.signal} 结束`
+    return `服务未正常停止（${how}，期望退出码 0）；服务端原始日志：\n${logs}`
   }
   return null
 }
@@ -86,6 +93,8 @@ export class ProductionServer {
   /** 版本 A 的哈希资源，切换版本 B 后仍需保留以便旧页面继续加载。 */
   private readonly keptAssetNames: string[] = []
   private child: ChildProcess | null = null
+  /** 进程退出后记下的真实结果；null 表示还没有进程退出。 */
+  private finished: { code: number | null; signal: NodeJS.Signals | null } | null = null
   private logLines: string[] = []
 
   private constructor(root: string) {
@@ -125,7 +134,10 @@ export class ProductionServer {
         this.logLines.push(chunk.toString('utf8'))
       })
     }
-    child.once('exit', () => {
+    child.once('exit', (code, signal) => {
+      // 先记下真实结果再断开引用：stopGracefully 之后要靠它判断进程是不是
+      // 早就自己退了，不能只看 child 是否为 null。
+      this.finished = { code, signal }
       if (this.child === child) this.child = null
     })
     await waitForHealth(PRODUCTION_ORIGIN, Date.now() + READY_TIMEOUT_MS)
@@ -138,12 +150,21 @@ export class ProductionServer {
   /**
    * 通过 stdin 请求正常停止，并等待进程退出。
    *
-   * 返回退出码而不是布尔值：正常停机必须是退出码 0，「超时」和「非零退出」是两种
-   * 不同的异常，调用方都要让用例失败，不能只打印日志。
+   * 返回真实退出结果而不是布尔值：正常停机必须是退出码 0，「超时」「非零退出」
+   * 和「被信号结束」是三种不同的异常，调用方都要让用例失败，不能只打印日志。
    */
   async stopGracefully(): Promise<ShutdownResult> {
     const child = this.child
-    if (child === null) return { exited: true, code: 0 }
+    if (child === null) {
+      // 进程已经不在了（例如就绪之后自己崩了）。这里必须返回记下来的真实结果：
+      // 凭空报「退出码 0」会把「提前退出」判成「正常停止」。
+      const finished = this.finished
+      if (finished === null) {
+        // 连退出事件都没有记录到：宁可按失败处理，也不谎报成功。
+        return { exited: true, code: null, signal: null }
+      }
+      return { exited: true, code: finished.code, signal: finished.signal }
+    }
     child.stdin?.write('stop\n')
     const exited = await new Promise<boolean>((done) => {
       if (child.exitCode !== null || child.signalCode !== null) return done(true)
@@ -153,9 +174,11 @@ export class ProductionServer {
         done(true)
       })
     })
+    // exitCode/signalCode 由 Node 在退出后填充，与记下的退出事件是同一份事实。
     const code = child.exitCode
+    const signal = child.signalCode
     if (exited) this.child = null
-    return { exited, code }
+    return { exited, code, signal }
   }
 
   async kill(): Promise<void> {
@@ -320,25 +343,35 @@ export async function focusEditor(page: Page): Promise<void> {
 }
 
 /**
- * 等浏览器派发 selectionchange、编辑内核跟上 DOM 选区。
+ * 等浏览器派发 selectionchange，并确认编辑内核已经跟上 DOM 选区。
  *
  * 键盘扩展选区后 DOM 选区立刻变化，但编辑内核要等 selectionchange 才更新它自己的
  * selection。这中间发出的删除键会按旧选区执行，表现为「少删了几个字」。
  */
 export async function settleSelection(page: Page): Promise<void> {
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => setTimeout(resolve, 0))
+  await expect
+    .poll(() =>
+      page.getByRole('textbox', { name: '文档正文' }).evaluate((element) => {
+        const selection = window.getSelection()
+        if (!selection?.anchorNode || !selection.focusNode) return false
+        if (!element.contains(selection.anchorNode) || !element.contains(selection.focusNode)) {
+          return false
+        }
+        const { view } = (element as HTMLElement & { editor: Editor }).editor
+        return (
+          view.state.selection.anchor === view.posAtDOM(selection.anchorNode, selection.anchorOffset) &&
+          view.state.selection.head === view.posAtDOM(selection.focusNode, selection.focusOffset)
+        )
       }),
-  )
+    )
+    .toBe(true)
 }
 
 /**
  * 选中当前段落开头的若干字符。
  *
- * 逐次扩展后确认选区长度真的到了预期值，再等编辑内核跟上，然后才返回：
- * 连续按键可能落在同一次 DOM 更新之前，直接删会少删或多删。
+ * 每次扩展都等编辑内核与 DOM 一致，再发下一次按键，最后确认精确长度。
+ * 只在全部按键结束后等待太晚：中途 DOM 选区可能已经领先内核好几个字符。
  *
  * 还要先确认光标确实回到段首——点击定位与 Home 生效之间是异步的，若此时就开始
  * 扩展，选区会从中途开始，长度永远到不了预期。
@@ -349,6 +382,7 @@ export async function selectLeadingCharacters(page: Page, count: number): Promis
     page.evaluate(() => window.getSelection()?.anchorOffset === 0)
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await page.keyboard.press('Home')
+    await settleSelection(page)
     try {
       await expect.poll(atParagraphStart, { timeout: 2000 }).toBe(true)
       break
@@ -358,6 +392,7 @@ export async function selectLeadingCharacters(page: Page, count: number): Promis
   }
   for (let index = 0; index < count; index += 1) {
     await page.keyboard.press('Shift+ArrowRight')
+    await settleSelection(page)
   }
   await expect
     .poll(() =>

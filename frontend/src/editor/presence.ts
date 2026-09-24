@@ -94,7 +94,14 @@ export function usePresence(context: OverlayContext): Presence {
     const editor = context.editor.value
     const surface = context.surface.value
     if (editor === undefined || surface === null) return
-    paragraphs.value = readParagraphs(editor, context.doc)
+
+    // 读不到快照时**保留上一次可用的那份**，不要清空。
+    // 组合输入期间 readParagraphs 会返回 null；如果把它当空缓存存下来，之后只是
+    // 移动鼠标（没有正文事务）就不会再触发测量，指针会一直发不出去——表现为
+    // 「中文输入结束后鼠标指针不再显示，调整窗口才恢复」。
+    const snapshot = readParagraphs(editor, context.doc)
+    if (snapshot === null) return
+    paragraphs.value = snapshot
     render(surface)
   }
 
@@ -175,8 +182,22 @@ export function usePresence(context: OverlayContext): Presence {
 
   const onPointerMove = (event: PointerEvent): void => {
     if (disposed) return
+
+    // 断线期间不发布指针：Awareness 会在重连时把最后的本地状态重新广播出去，
+    // 离线时存下的位置会在重连后「复活」成一个早已过期的指针。
+    if (!context.connected.value) {
+      clearLocalPointer()
+      return
+    }
+
     const current = paragraphs.value
-    const position = current === null ? null : locatePointer(current, event.clientX, event.clientY)
+    if (current === null) {
+      // 还没有可用快照（例如首帧恰好落在组合输入期间）：安排一次测量，
+      // 下一次移动就能正常定位。
+      schedule()
+      return
+    }
+    const position = locatePointer(current, event.clientX, event.clientY)
     lastPosition = position
     if (pendingPublish !== null) return
 
@@ -240,7 +261,11 @@ export function usePresence(context: OverlayContext): Presence {
   const stopConnectionWatch = watch(
     () => context.connected.value,
     (connected) => {
-      if (!connected) clearLocalPointer()
+      if (!connected) {
+        clearLocalPointer()
+        // 清理不依赖正文测量：组合输入期间拿不到快照，也必须立即隐藏远端指针。
+        pointers.value = []
+      }
       schedule()
     },
     { immediate: true },

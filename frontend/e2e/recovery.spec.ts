@@ -189,7 +189,10 @@ test.describe('服务重启与恢复', () => {
     // 关掉最后一个页面，再请求正常停止：lifespan 必须走完收尾流程。
     await first.close()
     const stopped = await backend.stopGracefully()
-    expect(stopped).toBe(true)
+    // 必须真的以退出码 0 结束：只判「退出了没有」会把停机写盘失败也算成正常停止。
+    // 失败时把服务端日志一起报出来，否则只能靠猜。
+    expect(stopped.exited, `服务未在时限内退出；原始日志：\n${backend.logs}`).toBe(true)
+    expect(stopped.code, `服务未正常停止；原始日志：\n${backend.logs}`).toBe(0)
 
     await backend.restart()
 

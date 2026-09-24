@@ -42,10 +42,45 @@ GRACEFUL_SHUTDOWN_SECONDS = 10
 #: lifespan 异常都不是这个形状，因此这里只按异常类型与文案精确匹配，不做兜底吞异常。
 SHUTDOWN_RACE_MARKER = "connection is closing"
 
+#: 故障注入开关：置 1 时让应用在停机写回阶段失败。
+#:
+#: 「停机写盘失败必须让进程以非零码退出」是这套停机测试的可信度所在，而真实的写盘
+#: 失败（存储只读、磁盘故障）没法在自动测试里稳定复现。开关只存在于这个测试启动器
+#: 里，不进正式应用。
+FORCE_SHUTDOWN_FAILURE_VARIABLE = "COLLAB_LAUNCHER_FORCE_SHUTDOWN_FAILURE"
+
+
+def inject_shutdown_failure() -> None:
+    """把 ``Collaboration.close`` 换成必定失败的版本。
+
+    只替换停机写回这一步，启动、接客与正常收发都不受影响，因此测出来的仍然是
+    「停机失败会不会被当成成功」这一条。
+    """
+    from app.collaboration import Collaboration, StorageUnavailable
+
+    async def failing_close(self: Collaboration) -> None:
+        raise StorageUnavailable("注入的停机写盘失败")
+
+    Collaboration.close = failing_close  # type: ignore[method-assign]
+
 
 def is_connection_teardown_race(error: BaseException) -> bool:
     """判断异常是否是上面那种「停机时连接正在关闭」的竞态。"""
     return type(error).__name__ == "InvalidState" and SHUTDOWN_RACE_MARKER in str(error)
+
+
+def server_shutdown_failed(server: uvicorn.Server) -> bool:
+    """uvicorn 是否因为 lifespan 的**停机**异常而结束。
+
+    uvicorn 只在**启动**失败时用非零退出码结束进程；lifespan 的**停机**异常它只打
+    一行「Application shutdown failed」日志，然后让 ``serve()`` 正常返回，进程仍以
+    0 退出。应用停机写盘失败（``Collaboration.close`` 抛 ``StorageUnavailable``）
+    走的正是这条路径——不查这个标志，测试就会把「没写成功」当成「正常停止」。
+
+    按 uvicorn 自己的标志判定，而不是靠日志文本匹配：这个标志就是它内部用来决定
+    「Application shutdown failed」的那一个。
+    """
+    return bool(getattr(getattr(server, "lifespan", None), "shutdown_failed", False))
 
 
 def watch_stdin(server: uvicorn.Server) -> None:
@@ -73,6 +108,9 @@ def main() -> None:
     # 仍是纯 API/WS 服务。
     static_directory = os.environ.get("COLLAB_STATIC_DIR") or None
 
+    if os.environ.get(FORCE_SHUTDOWN_FAILURE_VARIABLE) == "1":
+        inject_shutdown_failure()
+
     config = uvicorn.Config(
         create_app(data_directory, static_directory=static_directory),
         host="127.0.0.1",
@@ -91,15 +129,24 @@ def main() -> None:
     try:
         server.run()
     except BaseException as error:  # noqa: BLE001 - 需要区分竞态与真实失败
-        # 我们已经请求过停止、服务确实起来了，且异常正是那个已知竞态：
-        # 应用自身的关闭已经完成，按正常停止收尾，让调用方拿到退出码 0。
-        if server.started and server.should_exit and is_connection_teardown_race(error):
-            print(
-                "[launcher] 忽略 uvicorn 停机时已知的连接拆除竞态，应用关闭已完成",
-                file=sys.stderr,
-            )
-            return
-        traceback.print_exc()
+        # 我们已经请求过停止、服务确实起来了，且异常正是那个已知竞态：按正常停止
+        # 收尾，不把这个 uvicorn 缺陷报成失败。应用究竟有没有完成停机写回，交给
+        # 下面的标志判定，不由这个豁免推断。
+        if not (server.started and server.should_exit and is_connection_teardown_race(error)):
+            traceback.print_exc()
+            raise SystemExit(1)
+        print(
+            "[launcher] 忽略 uvicorn 停机时已知的连接拆除竞态",
+            file=sys.stderr,
+        )
+
+    # 走到这里说明 uvicorn 认为服务已结束。但它不会因为 lifespan 的停机异常而返回
+    # 非零，所以这里必须自己判：否则「停机写盘失败」会被调用方当成「正常停止」。
+    if server_shutdown_failed(server):
+        print(
+            "[launcher] 应用停机失败（完整 traceback 见 uvicorn 日志），按失败退出",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
 
